@@ -23,6 +23,7 @@ import {
   FolderOpenOutlined,
   HomeOutlined,
   LoadingOutlined,
+  PlaySquareOutlined,
   ReloadOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
@@ -55,7 +56,7 @@ const STATUS_ICON = {
 };
 
 const TaskCard = memo(
-  function TaskCard({ t, onRetry, onReveal }) {
+  function TaskCard({ t, onRetry, onOpen, onReveal }) {
   const pct = t.percent > 0 ? Math.min(100, t.percent) : 0;
   const pctText = t.status === 'done' ? '100%' : pct > 0 ? pct.toFixed(1) + '%' : '—';
   const qLabel = t.audio ? 'MP3' : t.quality ? t.quality + 'P' : '最佳';
@@ -87,6 +88,11 @@ const TaskCard = memo(
           {t.status === 'error' && (
             <Button size="small" type="text" data-act="retry" onClick={() => onRetry(t.id)}>
               <ReloadOutlined /> 重试
+            </Button>
+          )}
+          {t.file && (
+            <Button size="small" type="text" data-act="open" onClick={() => onOpen(t.file)}>
+              <PlaySquareOutlined /> 打开文件
             </Button>
           )}
           {t.file && (
@@ -215,6 +221,10 @@ export default function App() {
   /* ---- 任务操作 ---- */
   const onRetry = useCallback(async (id) => {
     const r = await api.retry(id).catch(() => null);
+    if (r?.error) message.error(r.error);
+  }, []);
+  const onOpen = useCallback(async (p) => {
+    const r = await api.openFile(p).catch(() => null);
     if (r?.error) message.error(r.error);
   }, []);
   const onReveal = useCallback(async (p) => {
@@ -446,7 +456,7 @@ export default function App() {
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<>还没有任务 —— 粘贴链接，按 <Text keyboard>Ctrl</Text>+<Text keyboard>Enter</Text> 快速开始</>} />
         </div>
       ) : (
-        taskList.map((t) => <TaskCard key={t.id} t={t} onRetry={onRetry} onReveal={onReveal} />)
+        taskList.map((t) => <TaskCard key={t.id} t={t} onRetry={onRetry} onOpen={onOpen} onReveal={onReveal} />)
       )}
 
       <footer>

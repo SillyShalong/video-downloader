@@ -11,6 +11,7 @@ import http from 'node:http';
 const tmpRoot = mkdtempSync(path.join(tmpdir(), 'vd-gui-'));
 process.env.VD_CONFIG_PATH = path.join(tmpRoot, 'config.json');
 writeFileSync(process.env.VD_CONFIG_PATH, JSON.stringify({ proxy: '' }));
+process.env.VD_HISTORY_PATH = path.join(tmpRoot, 'history.json');
 
 const { createApp } = await import('../src/server.mjs');
 const server = createApp();
@@ -164,7 +165,7 @@ test('GUI: 端到端下载任务 → 任务卡完成', { skip: !browser, timeout
   await page.waitForSelector('.sticon.done', { timeout: 30000 });
   const file = await page.textContent('.task .file');
   assert.ok(file.includes('.mp4'), '任务卡应显示文件名: ' + file);
-  assert.ok((await page.locator('.task button').count()) >= 1, '应存在操作按钮');
+  assert.ok((await page.locator('.task button[data-act="open"]').count()) >= 1, '应有「打开文件」按钮');
 });
 
 test('GUI: 失败任务重试按钮 → 点按后成功', { skip: !browser, timeout: 120000 }, async () => {

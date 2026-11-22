@@ -10,6 +10,7 @@ export const api = {
   parse: (input) => post('/api/parse', { input }),
   download: (payload) => post('/api/download', payload),
   retry: (id) => post('/api/retry', { id }),
+  openFile: (path) => post('/api/open', { path }),
   reveal: (path) => post('/api/reveal', { path }),
   pickDir: () => post('/api/pick-dir', {}),
   proxyTest: (proxy) => post('/api/proxy-test', { proxy }),

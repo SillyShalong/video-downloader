@@ -1,6 +1,7 @@
-// 单元测试：纯逻辑（站点识别、URL 抽取、参数构建、配置校验、explorer 参数）
+// 单元测试：纯逻辑（站点识别、URL 抽取、参数构建、配置校验、explorer 参数、历史）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { matchSite, extractUrls } from '../src/sites.mjs';
 import { buildArgs } from '../src/downloader.mjs';
 import { isValidProxy } from '../src/config.mjs';
@@ -136,4 +137,28 @@ test('buildExplorerArgs: 目录直接打开；路径中的引号被剥离', () =
   assert.equal(dirArg, '"C:\\my dir"');
   const [clean] = buildExplorerArgs('C:\\a"b\\c.mp4', false);
   assert.equal(clean, '/select,"C:\\ab\\c.mp4"');
+});
+
+// ---------- 下载历史 ----------
+test('history: 保存/读取往返、同 id 去重、上限裁剪', async () => {
+  const { loadHistory, appendHistory } = await import('../src/history.mjs');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'vd-hist-')), 'history.json');
+  try {
+    assert.deepEqual(loadHistory(file), [], '初始为空');
+    appendHistory({ id: 'a', url: 'https://x/1', file: 'D:/v/a.mp4', title: 'A' }, file);
+    appendHistory({ id: 'b', url: 'https://x/2', file: 'D:/v/b.mp4', title: 'B' }, file);
+    appendHistory({ id: 'a', url: 'https://x/1', file: 'D:/v/a2.mp4', title: 'A2' }, file); // 覆盖同 id
+    let list = loadHistory(file);
+    assert.equal(list.length, 2, '同 id 去重后 2 条');
+    assert.equal(list.find((r) => r.id === 'a').file, 'D:/v/a2.mp4', '保留最新');
+    // 上限裁剪（大量追加后只留最近的）
+    for (let i = 0; i < 600; i++) appendHistory({ id: 'n' + i, url: 'u' + i }, file);
+    list = loadHistory(file);
+    assert.equal(list.length, 500, '上限 500');
+    assert.ok(list.some((r) => r.id === 'n599'), '保留最新记录');
+  } finally {
+    rmSync(path.dirname(file), { recursive: true, force: true });
+  }
 });

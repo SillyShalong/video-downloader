@@ -4,6 +4,7 @@
 //   GET  /api/events  SSE 实时任务事件流
 //   POST /api/parse   从分享口令/文本解析出 URL 与站点
 //   POST /api/download 提交下载任务（顺序执行）
+//   POST /api/open    用系统默认程序打开文件
 //   POST /api/reveal  在资源管理器中定位文件
 import http from 'node:http';
 import { existsSync, statSync } from 'node:fs';
@@ -16,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { download, DEFAULT_OUT_DIR } from './downloader.mjs';
 import { matchSite, extractUrls } from './sites.mjs';
 import { loadConfig, saveConfig, isValidProxy } from './config.mjs';
+import { loadHistory, appendHistory } from './history.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 前端为 Vite + React + AntD 构建（web/dist），npm run build:web 生成
@@ -78,6 +80,11 @@ export function createApp(opts = {}) {
   const queue = []; // 待执行的任务 id（顺序执行）
   const clients = new Set(); // 已连接的 SSE 响应对象
   let pumping = false;
+
+  // 启动时回填历史（已完成任务的元数据：原始链接/目标路径等）
+  for (const r of loadHistory()) {
+    tasks.set(r.id, { ...r, log: r.log || [], stage: '完成', percent: 100 });
+  }
 
   function emitTask(task, { throttle = false } = {}) {
     const now = Date.now();
@@ -155,6 +162,10 @@ export function createApp(opts = {}) {
         t.file = files[0] ?? t.file;
         if (files[0]) t.log.push(`✔ ${files[0]}`);
         emitTask(t);
+        // 持久化到下载历史（失败不影响任务本身）
+        try {
+          appendHistory({ ...publicTask(t), log: (t.log || []).slice(-10) });
+        } catch {}
       } catch (err) {
         t.status = 'error';
         t.error = err.message.split('\n').slice(-6).join('\n');
@@ -412,6 +423,25 @@ export function createApp(opts = {}) {
         emitTask(t);
         pump(); // 异步跑，不等
         send(200, { ok: true, task: publicTask(t) });
+        return;
+      }
+
+      if (req.method === 'POST' && req.url === '/api/open') {
+        // 用系统默认程序打开文件（播放器/图片查看器等）
+        const body = await readJson(req);
+        const p = String(body.path || '').replace(/"/g, '');
+        if (!p || !existsSync(p)) {
+          send(404, { error: '文件不存在（可能已被移动或删除）' });
+          return;
+        }
+        if (statSync(p).isDirectory()) {
+          send(400, { error: '这是目录，请用「打开文件夹」' });
+          return;
+        }
+        // cmd /c start "" "路径"：start 首个引号参数是窗口标题占位，
+        // 空标题 + 引号包裹路径可正确处理空格/中文/emoji
+        spawn('cmd', ['/c', 'start', '', p], { detached: true, stdio: 'ignore' }).unref();
+        send(200, { ok: true });
         return;
       }
 

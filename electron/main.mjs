@@ -4,10 +4,11 @@
 import { app, BrowserWindow, dialog, shell } from 'electron';
 import path from 'node:path';
 
-// 打包版路径解耦：bin 在 resources/bin，配置放用户数据目录，默认下载到系统下载夹
+// 打包版路径解耦：bin 在 resources/bin，配置/历史放用户数据目录，默认下载到系统下载夹
 if (app.isPackaged) {
   process.env.VD_BIN_DIR = path.join(process.resourcesPath, 'bin');
   process.env.VD_CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
+  process.env.VD_HISTORY_PATH = path.join(app.getPath('userData'), 'history.json');
   process.env.VD_OUT_DIR = path.join(app.getPath('downloads'));
 }
 

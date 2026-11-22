@@ -2,17 +2,18 @@
 // 外网相关用例（代理连通性实测）默认跳过，RUN_NETWORK_TESTS=1 时启用
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 
 const RUN_NETWORK = process.env.RUN_NETWORK_TESTS === '1';
 
-// 隔离配置：必须在导入业务模块前设置（config.mjs 在导入时读取）
+// 隔离配置：必须在导入业务模块前设置（config.mjs / history.mjs 在导入时读取）
 const tmpRoot = mkdtempSync(path.join(tmpdir(), 'vd-test-'));
 process.env.VD_CONFIG_PATH = path.join(tmpRoot, 'config.json');
 writeFileSync(process.env.VD_CONFIG_PATH, JSON.stringify({ proxy: '' }));
+process.env.VD_HISTORY_PATH = path.join(tmpRoot, 'history.json');
 
 const { createApp } = await import('../src/server.mjs');
 
@@ -183,9 +184,14 @@ test('POST /api/pick-dir: web 模式返回 native:false', async () => {
   assert.deepEqual(body, { native: false });
 });
 
-// ---------- 定位文件 ----------
+// ---------- 定位/打开文件 ----------
 test('POST /api/reveal: 不存在的路径 → 404（不弹窗）', async () => {
   assert.equal((await post('/api/reveal', { path: 'C:\\no-such.mp4' })).status, 404);
+});
+
+test('POST /api/open: 不存在 → 404；目录 → 400（不真的弹程序）', async () => {
+  assert.equal((await post('/api/open', { path: 'C:\\no-such.mp4' })).status, 404);
+  assert.equal((await post('/api/open', { path: tmpRoot })).status, 400);
 });
 
 // ---------- 下载任务（真实 yt-dlp + 本地桩，SSE 全链路） ----------
@@ -240,6 +246,28 @@ test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', 
   const { readFile } = await import('node:fs/promises');
   const content = await readFile(task.file);
   assert.equal(content.length, stubBody.length);
+
+  // 下载历史持久化：元数据（原始链接/目标路径）落盘
+  const history = JSON.parse(readFileSync(process.env.VD_HISTORY_PATH, 'utf8'));
+  const rec = history.find((r) => r.id === body.tasks[0].id);
+  assert.ok(rec, '历史应包含该任务');
+  assert.equal(rec.url, STUB_URL, '历史保留原始链接');
+  assert.equal(rec.file, task.file, '历史保留下载目的地');
+
+  // 重启回填：新建一个 app 实例，任务列表应含历史记录
+  const server2 = createApp();
+  await new Promise((res2) => server2.listen(0, '127.0.0.1', res2));
+  try {
+    const base2 = `http://127.0.0.1:${server2.address().port}`;
+    const seeded = await fetch(base2 + '/api/tasks').then((r) => r.json());
+    const st = seeded.tasks.find((t) => t.id === body.tasks[0].id);
+    assert.equal(st?.status, 'done', '重启后历史任务可见');
+    assert.equal(st?.file, task.file);
+    assert.equal(st?.url, STUB_URL);
+  } finally {
+    server2.close();
+    server2.closeAllConnections?.();
+  }
 });
 
 test('POST /api/download: 重复链接去重为一个任务', async () => {
