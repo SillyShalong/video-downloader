@@ -41,7 +41,6 @@
 
 - `VideoDownloader-Setup-x.y.z-x64.exe` — Windows 安装包（可选安装目录、创建桌面快捷方式）
 - `VideoDownloader-Portable-x.y.z-x64.exe` — Windows 便携版（免安装，双击即用）
-- macOS（Apple Silicon dmg）与 Linux（x64/arm64 AppImage）打包目标已配置：在对应平台 `npm run dist:mac` / `dist:linux`
 
 开箱即用，无需安装 Node.js / Python，yt-dlp、ffmpeg、deno 全部内置。
 
@@ -51,7 +50,7 @@
 git clone https://github.com/SillyShalong/video-downloader.git
 cd video-downloader
 npm install          # 安装依赖（Electron / React / AntD / Capacitor）
-npm run setup        # 按当前 系统/架构 下载 yt-dlp / ffmpeg / deno（Win/mac/Linux 通用）
+npm run setup        # 下载 yt-dlp / ffmpeg / deno 到 bin/
 npm run build:web    # 构建前端
 npm start            # 启动桌面应用
 ```
@@ -67,17 +66,18 @@ Node 引擎无法跑在手机上，移动端为「**远程模式**」——操�
      `npx cap sync android && cd android && gradlew assembleDebug` 生成 APK；
      App 内 ⚙ → 「远程模式 · 服务器地址」填桌面地址
 
-## 🖥 跨平台架构
+## 🖥 架构
 
 ```
 同一份 core（src/）+ 同一套 UI（web/React）
- ├ Windows / macOS / Linux → Electron 桌面应用
- │   所有 OS 差异收敛在 src/platform.mjs：二进制命名 / 打开·定位文件 /
- │   根目录枚举 / Chromium 发现（Edge/Chrome/Chromium）/ 进程树击杀
- ├ 二进制（npm run setup 自动按 平台+架构 选取）：
- │   yt-dlp 官方 · ffmpeg（Win=FFmpeg-Builds 全功能包，mac/Linux=ffmpeg-static 单文件）· deno
+ ├ Windows → Electron 桌面应用（当前发布平台）
+ │   平台差异已收敛在 src/platform.mjs（二进制命名/打开定位文件/根目录/
+ │   Chromium 发现/进程树击杀），Linux/macOS 移植时只需在对应平台构建
  └ Android → Capacitor 壳 + 远程模式（服务端已开 CORS）
 ```
+
+> 路线图备注：macOS（arm64）/ Linux（x64/arm64）适配已完成核心抽象与打包配置，
+> 暂缓发布——恢复时在对应平台执行 `npm run setup && npm run dist:mac|dist:linux` 即可。
 
 ## 🚀 快速上手
 
