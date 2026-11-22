@@ -23,11 +23,13 @@ import {
   FolderOpenOutlined,
   HomeOutlined,
   LoadingOutlined,
+  PauseCircleOutlined,
   PlaySquareOutlined,
   ReloadOutlined,
   SettingOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
-import { api, midTrunc, SITE_LABEL } from './api.js';
+import { api, midTrunc, SITE_LABEL, fmtSpeed, fmtBytes, fmtEta } from './api.js';
 import logoUrl from './assets/logo.svg';
 
 const { Text, Paragraph } = Typography;
@@ -54,10 +56,12 @@ const STATUS_ICON = {
   running: <LoadingOutlined />,
   done: <CheckOutlined />,
   error: <CloseOutlined />,
+  paused: <PauseCircleOutlined />,
+  cancelled: <StopOutlined />,
 };
 
 const TaskCard = memo(
-  function TaskCard({ t, onRetry, onOpen, onReveal }) {
+  function TaskCard({ t, onRetry, onPause, onCancel, onOpen, onReveal }) {
   const pct = t.percent > 0 ? Math.min(100, t.percent) : 0;
   const pctText = t.status === 'done' ? '100%' : pct > 0 ? pct.toFixed(1) + '%' : '—';
   const qLabel = t.audio ? 'MP3' : t.quality ? t.quality + 'P' : '最佳';
@@ -84,8 +88,29 @@ const TaskCard = memo(
       )}
       <div className="foot">
         <span className="file" title={t.file || ''}>{fileName}</span>
+        {t.status === 'running' && t.speed > 0 && (
+          <span className="speed">{fmtSpeed(t.speed)}{t.eta >= 0 ? ` · 剩余 ${fmtEta(t.eta)}` : ''}</span>
+        )}
+        {t.status === 'running' && t.downloaded > 0 && (
+          <span className="size">{fmtBytes(t.downloaded)}{t.totalBytes ? ` / ${fmtBytes(t.totalBytes)}` : ''}</span>
+        )}
         <span className="pct">{pctText}</span>
         <div className="actions">
+          {t.status === 'running' && (
+            <>
+              <Button size="small" type="text" data-act="pause" onClick={() => onPause(t.id)}>
+                <PauseCircleOutlined /> 暂停
+              </Button>
+              <Button size="small" type="text" data-act="cancel" onClick={() => onCancel(t.id)}>
+                <StopOutlined /> 终止
+              </Button>
+            </>
+          )}
+          {(t.status === 'paused' || t.status === 'cancelled') && (
+            <Button size="small" type="text" data-act="retry" onClick={() => onRetry(t.id)}>
+              <ReloadOutlined /> 恢复
+            </Button>
+          )}
           {t.status === 'error' && (
             <Button size="small" type="text" data-act="retry" onClick={() => onRetry(t.id)}>
               <ReloadOutlined /> 重试
@@ -132,6 +157,10 @@ const TaskCard = memo(
         x.title === y.title &&
         x.file === y.file &&
         x.error === y.error &&
+        x.speed === y.speed &&
+        x.eta === y.eta &&
+        x.downloaded === y.downloaded &&
+        x.totalBytes === y.totalBytes &&
         x.log?.length === y.log?.length &&
         x.quality === y.quality &&
         x.audio === y.audio)
@@ -156,8 +185,14 @@ export default function App() {
   const [proxyStatus, setProxyStatus] = useState(null); // {ok, text}
 
   const [tasks, setTasks] = useState(() => new Map());
+  const [stats, setStats] = useState(null);
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
+
+  const refreshStats = useCallback(() => {
+    fetch('/api/stats').then((r) => r.json()).then(setStats).catch(() => {});
+  }, []);
+  useEffect(() => { refreshStats(); }, [refreshStats]);
 
   // 目录弹窗
   const [dmOpen, setDmOpen] = useState(false);
@@ -178,6 +213,7 @@ export default function App() {
         setTasks((prev) => (prev.size === 0 ? new Map(data.tasks.map((t) => [t.id, t])) : prev));
       } else if (data.type === 'task') {
         setTasks((prev) => new Map(prev).set(data.task.id, data.task));
+        if (data.task.status === 'done') refreshStats();
       }
     };
     return () => es.close();
@@ -222,6 +258,14 @@ export default function App() {
   /* ---- 任务操作 ---- */
   const onRetry = useCallback(async (id) => {
     const r = await api.retry(id).catch(() => null);
+    if (r?.error) message.error(r.error);
+  }, []);
+  const onPause = useCallback(async (id) => {
+    const r = await api.pause(id).catch(() => null);
+    if (r?.error) message.error(r.error);
+  }, []);
+  const onCancel = useCallback(async (id) => {
+    const r = await api.cancel(id).catch(() => null);
     if (r?.error) message.error(r.error);
   }, []);
   const onOpen = useCallback(async (p) => {
@@ -451,13 +495,23 @@ export default function App() {
       </Card>
 
       {/* 任务区 */}
-      <div className="section-head"><h2>下载任务</h2><span className="line" /></div>
+      <div className="section-head">
+        <h2>下载任务</h2>
+        <span className="line" />
+        {stats && (
+          <span className="stats-chip" title="基于下载历史的累计统计">
+            累计 {stats.totalFiles} 个 · {fmtBytes(stats.totalBytes) || '0 B'}
+          </span>
+        )}
+      </div>
       {taskList.length === 0 ? (
         <div className="empty">
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<>还没有任务 —— 粘贴链接，按 <Text keyboard>Ctrl</Text>+<Text keyboard>Enter</Text> 快速开始</>} />
         </div>
       ) : (
-        taskList.map((t) => <TaskCard key={t.id} t={t} onRetry={onRetry} onOpen={onOpen} onReveal={onReveal} />)
+        taskList.map((t) => (
+          <TaskCard key={t.id} t={t} onRetry={onRetry} onPause={onPause} onCancel={onCancel} onOpen={onOpen} onReveal={onReveal} />
+        ))
       )}
 
       <footer>

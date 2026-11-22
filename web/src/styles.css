@@ -90,8 +90,17 @@ header .sub { color: rgba(255, 255, 255, 0.38); font-size: 12px; margin-top: 1px
 .task .bar { margin: 12px 0 9px; }
 
 .task .foot { display: flex; align-items: center; gap: 10px; }
+.task .speed { font-size: 11.5px; font-weight: 600; color: #6d9eff; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.task .size { font-size: 11px; color: rgba(255, 255, 255, 0.4); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.stats-chip {
+  font-size: 11.5px; color: rgba(255, 255, 255, 0.42); white-space: nowrap;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px; padding: 2px 11px; font-variant-numeric: tabular-nums;
+}
 .task .pct { font-size: 12px; font-weight: 650; color: rgba(255, 255, 255, 0.55); min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
 .task.done .pct { color: #4ade80; }
+/* 下载中的暂停/终止按钮常显 */
+.task.running .actions { opacity: 1; }
 .task .file {
   flex: 1; font-family: Consolas, monospace; font-size: 11px; color: rgba(255, 255, 255, 0.38);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

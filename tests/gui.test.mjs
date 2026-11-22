@@ -213,3 +213,25 @@ test('GUI[回归]: 下载中任务卡不整卡重建（防闪烁）', { skip: !b
     { timeout: 30000 },
   );
 });
+
+test('GUI: 运行中任务显示速度并可暂停/恢复', { skip: !browser, timeout: 120000 }, async () => {
+  await page.fill('#input', SLOW_URL);
+  await page.click('#btn');
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('.task.running')].some((e) => e.textContent.includes('slow')),
+    { timeout: 20000 },
+  );
+  // 运行中的暂停/终止按钮常显
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.task.running .actions')).opacity === '1');
+  assert.ok((await page.locator('.task.running button[data-act="pause"]').count()) === 1, '应有暂停按钮');
+  // 暂停 → 已暂停（状态卡出现恢复按钮）
+  await page.click('.task.running button[data-act="pause"]');
+  await page.waitForSelector('.task.paused', { timeout: 15000 });
+  assert.ok((await page.locator('.task.paused button[data-act="retry"]').count()) === 1, '暂停卡应有恢复按钮');
+  // 恢复 → 完成
+  await page.click('.task.paused button[data-act="retry"]');
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('.task.done')].some((e) => e.textContent.includes('slow')),
+    { timeout: 30000 },
+  );
+});

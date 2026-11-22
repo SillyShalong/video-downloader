@@ -68,7 +68,7 @@ function sanitizeName(s) {
  * onEvent({type:'progress'|'file', ...})，返回 { url, files }
  */
 export async function downloadDouyin(url, opts = {}) {
-  const { outDir, quality, onEvent } = opts;
+  const { outDir, quality, onEvent, signal } = opts;
   mkdirSync(outDir, { recursive: true });
 
   const { id, pageUrl, isNote } = await resolveItem(url);
@@ -97,8 +97,10 @@ export async function downloadDouyin(url, opts = {}) {
   const urls = pickUrls(detail.video, quality);
   onEvent?.({ type: 'info', raw: `[douyin] @${detail.author?.nickname || '未知'} 《${title}》 开始下载` });
   await downloadFile(urls, dest, {
-    onProgress: (p) => onEvent?.({ type: 'progress', percent: p.percent, raw: p.raw }),
+    onProgress: (p) =>
+      onEvent?.({ type: 'progress', percent: p.percent, speed: p.speed, eta: p.eta, total: p.total, downloaded: p.done }),
     headers: { referer: 'https://www.douyin.com/' },
+    signal,
   });
   onEvent?.({ type: 'file', file: dest });
   return { url, files: [dest] };

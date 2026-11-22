@@ -19,6 +19,31 @@ export const DEFAULT_OUT_DIR = process.env.VD_OUT_DIR || path.join(ROOT, 'downlo
 const OUTPUT_TEMPLATE = '%(title)s [%(id)s].%(ext)s';
 
 const PROGRESS_RE = /^\[download\]\s+(\d+(?:\.\d+)?)%/;
+// 速度/大小解析：`45.3% of ~ 10.00MiB at 1.50MiB/s ETA 00:05` 或 `100% of 10.00MiB in 00:00:04 at 1.50MiB/s`
+const SPEED_RE =
+  /of\s+~?\s*([\d.]+)\s*(KiB|MiB|GiB)(?:.*?at\s+([\d.]+)\s*(KiB|MiB|GiB)\/s)?(?:.*?ETA\s+([\d:]+))?/i;
+const UNIT = { KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3 };
+
+/** 解析 yt-dlp 进度行中的总量/速度/ETA（无匹配字段返回 null） */
+export function parseProgressDetail(line) {
+  const m = line.match(SPEED_RE);
+  if (!m) return null;
+  const total = Number(m[1]) * (UNIT[m[2]] || 1);
+  const speed = m[3] ? Number(m[3]) * (UNIT[m[4]] || 1) : null;
+  let eta = null;
+  if (m[5]) {
+    eta = m[5].split(':').reverse().reduce((acc, part, i) => acc + Number(part) * 60 ** i, 0);
+  }
+  return { total, speed, eta };
+}
+
+/** 终止一个进程及其子进程树（Windows：yt-dlp 合并时会拉起 ffmpeg 子进程） */
+function killTree(child) {
+  if (!child.pid) return;
+  try {
+    spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' });
+  } catch {}
+}
 
 /** 瞬时网络错误（可整层重试）：403/429/超时/连接中断等 */
 const TRANSIENT_ERR_RE =
@@ -124,7 +149,7 @@ export async function download(url, opts = {}) {
 }
 
 async function downloadViaYtDlp(url, opts = {}) {
-  const { onEvent } = opts;
+  const { onEvent, signal } = opts;
   if (!existsSync(YTDLP)) throw new Error(`未找到 ${YTDLP}\n先运行: npm run setup`);
   if (!existsSync(FFMPEG)) throw new Error(`未找到 ${FFMPEG}\n先运行: npm run setup`);
   mkdirSync(opts.outDir ?? DEFAULT_OUT_DIR, { recursive: true });
@@ -133,7 +158,9 @@ async function downloadViaYtDlp(url, opts = {}) {
   const maxAttempts = 3;
 
   for (let attempt = 1; ; attempt++) {
-    const { code, tail, files } = await runYtDlpOnce(url, args, onEvent);
+    if (signal?.aborted) throw abortError();
+    const { code, tail, files } = await runYtDlpOnce(url, args, onEvent, signal);
+    if (signal?.aborted) throw abortError();
     if (code === 0) {
       await ensurePlayableFiles(files, (ev) => onEvent?.(ev));
       return { url, files };
@@ -150,8 +177,14 @@ async function downloadViaYtDlp(url, opts = {}) {
   }
 }
 
-/** 跑一次 yt-dlp 进程，收集结果（不抛业务异常） */
-function runYtDlpOnce(url, args, onEvent) {
+function abortError() {
+  const e = new Error('已中止');
+  e.name = 'AbortError';
+  return e;
+}
+
+/** 跑一次 yt-dlp 进程，收集结果（不抛业务异常）；signal 触发时击杀进程树 */
+function runYtDlpOnce(url, args, onEvent, signal) {
   return new Promise((resolve, reject) => {
     // bin/ 放进 PATH 让 yt-dlp 自动发现 deno(JS runtime，解 YouTube 签名挑战)；
     // 同时强制 Python 侧输出编码，双保险避免中文/emoji 被 GBK 破坏
@@ -164,6 +197,11 @@ function runYtDlpOnce(url, args, onEvent) {
         PYTHONUTF8: '1',
       },
     });
+    const onAbort = () => killTree(child);
+    if (signal) {
+      if (signal.aborted) killTree(child);
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
     const files = [];
     const tail = []; // 保留末尾若干行，出错时报告
     let stdoutBuf = '';
@@ -178,7 +216,13 @@ function runYtDlpOnce(url, args, onEvent) {
 
       const m = text.match(PROGRESS_RE);
       if (m) {
-        emit({ type: 'progress', percent: parseFloat(m[1]), raw: text });
+        const d = parseProgressDetail(text);
+        emit({
+          type: 'progress',
+          percent: parseFloat(m[1]),
+          raw: text,
+          ...(d ?? {}),
+        });
         return;
       }
       if (text.startsWith('[Merger]')) {
@@ -219,6 +263,7 @@ function runYtDlpOnce(url, args, onEvent) {
     child.on('error', reject);
     child.on('close', (code) => {
       if (stdoutBuf) handleLine(stdoutBuf);
+      signal?.removeEventListener('abort', onAbort);
       resolve({ code, tail, files });
     });
   });

@@ -100,12 +100,17 @@ export function createApp(opts = {}) {
       id: t.id,
       url: t.url,
       site: t.site,
-      status: t.status, // queued | running | done | error
+      status: t.status, // queued | running | done | error | paused | cancelled
       percent: t.percent,
       stage: t.stage,
       title: t.title,
       file: t.file,
       error: t.error,
+      speed: t.speed ?? null,
+      eta: t.eta ?? null,
+      downloaded: t.downloaded ?? null,
+      totalBytes: t.totalBytes ?? null,
+      sizeBytes: t.sizeBytes ?? null,
       log: t.log,
       quality: t.quality,
       audio: t.audio,
@@ -113,33 +118,45 @@ export function createApp(opts = {}) {
     };
   }
 
+  let currentRun = null; // { id, abort: AbortController } —— 正在执行的任务（用于暂停/终止）
+
   async function pump() {
     if (pumping) return;
     pumping = true;
     while (queue.length > 0) {
       const id = queue.shift();
       const t = tasks.get(id);
-      if (!t) continue;
+      if (!t || t.status === 'paused' || t.status === 'cancelled') continue;
       t.status = 'running';
       t.stage = '解析中';
+      t.error = null;
       emitTask(t);
 
+      const abort = new AbortController();
+      currentRun = { id, abort };
       try {
         const { files } = await download(t.url, {
           outDir: t.outDir,
           quality: t.quality,
           audioOnly: t.audio,
+          signal: abort.signal,
           onEvent: (ev) => {
             if (ev.type === 'progress') {
               t.percent = ev.percent >= 0 ? ev.percent : t.percent;
               t.stage = '下载中';
-              t._lastRaw = ev.raw;
+              t.speed = ev.speed ?? null; // 字节/秒
+              t.eta = ev.eta ?? null; // 秒
+              t.totalBytes = ev.total ?? null;
+              t.downloaded =
+                ev.downloaded ??
+                (ev.total && t.percent > 0 ? Math.round((ev.total * t.percent) / 100) : null);
               emitTask(t, { throttle: true });
             } else if (ev.type === 'title') {
               t.title = ev.title;
               emitTask(t);
             } else if (ev.type === 'merging') {
               t.stage = '合并音视频';
+              t.speed = t.eta = null;
               t.log.push(ev.raw);
               emitTask(t);
             } else if (ev.type === 'info') {
@@ -159,18 +176,33 @@ export function createApp(opts = {}) {
         t.status = 'done';
         t.percent = 100;
         t.stage = '完成';
+        t.speed = t.eta = null;
         t.file = files[0] ?? t.file;
         if (files[0]) t.log.push(`✔ ${files[0]}`);
+        // 完成时记录文件大小（统计用）
+        try {
+          t.sizeBytes = statSync(t.file).size;
+        } catch {}
         emitTask(t);
         // 持久化到下载历史（失败不影响任务本身）
         try {
           appendHistory({ ...publicTask(t), log: (t.log || []).slice(-10) });
         } catch {}
       } catch (err) {
-        t.status = 'error';
-        t.error = err.message.split('\n').slice(-6).join('\n');
-        t.log.push(`✖ ${err.message}`);
+        if (abort.signal.aborted) {
+          // 用户主动暂停/终止：保留 .part 供恢复（yt-dlp 断点续传）
+          t.status = t._intent || 'cancelled';
+          t.stage = t.status === 'paused' ? '已暂停' : '已终止';
+          t.speed = t.eta = null;
+          t.log.push(t.status === 'paused' ? '⏸ 已暂停（恢复时断点续传）' : '⏹ 已终止');
+        } else {
+          t.status = 'error';
+          t.error = err.message.split('\n').slice(-6).join('\n');
+          t.log.push(`✖ ${err.message}`);
+        }
         emitTask(t);
+      } finally {
+        currentRun = null;
       }
     }
     pumping = false;
@@ -194,6 +226,11 @@ export function createApp(opts = {}) {
         title: null,
         file: null,
         error: null,
+        speed: null,
+        eta: null,
+        downloaded: null,
+        totalBytes: null,
+        sizeBytes: null,
         log: [],
         outDir: path.resolve(outDir || DEFAULT_OUT_DIR),
         quality: quality || null,
@@ -398,6 +435,66 @@ export function createApp(opts = {}) {
         return;
       }
 
+      if (req.method === 'POST' && req.url === '/api/pause') {
+        const body = await readJson(req);
+        const t = tasks.get(String(body.id || ''));
+        if (!t) {
+          send(404, { error: '任务不存在' });
+          return;
+        }
+        if (t.status === 'queued') {
+          // 排队中：直接出队标记
+          const i = queue.indexOf(t.id);
+          if (i >= 0) queue.splice(i, 1);
+          t.status = 'paused';
+          t.stage = '已暂停';
+          emitTask(t);
+          send(200, { ok: true });
+          return;
+        }
+        if (t.status !== 'running' || currentRun?.id !== t.id) {
+          send(400, { error: '任务不在下载中，无法暂停' });
+          return;
+        }
+        t._intent = 'paused';
+        currentRun.abort.abort();
+        send(200, { ok: true });
+        return;
+      }
+
+      if (req.method === 'POST' && req.url === '/api/cancel') {
+        const body = await readJson(req);
+        const t = tasks.get(String(body.id || ''));
+        if (!t) {
+          send(404, { error: '任务不存在' });
+          return;
+        }
+        if (t.status === 'queued') {
+          const i = queue.indexOf(t.id);
+          if (i >= 0) queue.splice(i, 1);
+          t.status = 'cancelled';
+          t.stage = '已终止';
+          emitTask(t);
+          send(200, { ok: true });
+          return;
+        }
+        if (t.status !== 'running' || currentRun?.id !== t.id) {
+          send(400, { error: '任务不在下载中，无法终止' });
+          return;
+        }
+        t._intent = 'cancelled';
+        currentRun.abort.abort();
+        send(200, { ok: true });
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/api/stats') {
+        const hist = loadHistory();
+        const totalBytes = hist.reduce((s, r) => s + (r.sizeBytes || 0), 0);
+        send(200, { totalFiles: hist.length, totalBytes });
+        return;
+      }
+
       if (req.method === 'POST' && req.url === '/api/retry') {
         const body = await readJson(req);
         const t = tasks.get(String(body.id || ''));
@@ -413,12 +510,17 @@ export function createApp(opts = {}) {
         Object.assign(t, {
           status: 'queued',
           percent: 0,
-          stage: '排队中',
+          stage: t.status === 'paused' ? '恢复中…' : '排队中',
           error: null,
           log: [],
           file: null,
+          speed: null,
+          eta: null,
+          downloaded: null,
+          totalBytes: null,
           createdAt: Date.now(),
         });
+        delete t._intent;
         queue.push(t.id);
         emitTask(t);
         pump(); // 异步跑，不等

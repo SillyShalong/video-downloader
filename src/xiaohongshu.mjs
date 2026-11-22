@@ -73,7 +73,7 @@ function sanitizeName(s) {
 
 /** 下载小红书视频。事件协议与 douyin 引擎一致。 */
 export async function downloadXiaohongshu(url, opts = {}) {
-  const { outDir, quality, onEvent } = opts;
+  const { outDir, quality, onEvent, signal } = opts;
   mkdirSync(outDir, { recursive: true });
 
   const { id, pageUrl } = await resolveNote(url);
@@ -101,8 +101,10 @@ export async function downloadXiaohongshu(url, opts = {}) {
 
   onEvent?.({ type: 'info', raw: `[xhs] @${info.nickname || '未知'} 《${title}》 开始下载（${info.codec}）` });
   await downloadFile(info.urls, dest, {
-    onProgress: (p) => onEvent?.({ type: 'progress', percent: p.percent, raw: p.raw }),
+    onProgress: (p) =>
+      onEvent?.({ type: 'progress', percent: p.percent, speed: p.speed, eta: p.eta, total: p.total, downloaded: p.done }),
     headers: { referer: 'https://www.xiaohongshu.com/' },
+    signal,
   });
   onEvent?.({ type: 'file', file: dest });
   return { url, files: [dest] };

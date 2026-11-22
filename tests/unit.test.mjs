@@ -6,6 +6,35 @@ import { matchSite, extractUrls } from '../src/sites.mjs';
 import { buildArgs } from '../src/downloader.mjs';
 import { isValidProxy } from '../src/config.mjs';
 import { buildExplorerArgs } from '../src/server.mjs';
+import { parseProgressDetail } from '../src/downloader.mjs';
+
+// ---------- yt-dlp 进度行解析（速度/ETA/总量） ----------
+test('parseProgressDetail: 常见进度行格式', () => {
+  const KiB = 1024;
+  const MiB = 1024 ** 2;
+  // 常规格式：45.3% of 10.00MiB at 1.50MiB/s ETA 00:05
+  let d = parseProgressDetail('[download]  45.3% of   10.00MiB at    1.50MiB/s ETA 00:05');
+  assert.equal(d.total, 10 * MiB);
+  assert.equal(d.speed, 1.5 * MiB);
+  assert.equal(d.eta, 5);
+  // 估算大小（~ 前缀）无 ETA
+  d = parseProgressDetail('[download]  31.2% of ~ 3.00MiB at 301.85KiB/s');
+  assert.equal(d.total, 3 * MiB);
+  assert.equal(d.speed, 301.85 * KiB);
+  assert.equal(d.eta, null);
+  // 完成行：100% of 10.00MiB in 00:00:04 at 1.86MiB/s
+  d = parseProgressDetail('[download] 100% of   10.00MiB in 00:00:04 at 1.86MiB/s');
+  assert.equal(d.total, 10 * MiB);
+  assert.equal(d.speed, 1.86 * MiB);
+  // GiB 与分:秒 ETA
+  d = parseProgressDetail('[download]  12.5% of ~ 1.50GiB at 2.00MiB/s ETA 12:30');
+  assert.equal(d.total, 1.5 * 1024 ** 3);
+  assert.equal(d.eta, 750);
+  // 无速度信息
+  d = parseProgressDetail('[download]  50.0% of  477.56KiB at  Unknown B/s ETA Unknown');
+  assert.equal(d.total, 477.56 * KiB);
+  assert.equal(d.speed, null);
+});
 
 // ---------- 站点识别 ----------
 test('matchSite: YouTube 各域名', () => {

@@ -24,7 +24,9 @@ const BASE = `http://127.0.0.1:${server.address().port}`;
 
 // 本地 HTTP 桩：提供一个"假视频"文件供 yt-dlp 下载
 // flaky.mp4 配合 flakyFail 开关：置 true 时返回 403（模拟瞬时失败），置 false 后恢复
+// slow.mp4 分块慢发（暂停/终止/测速用）
 const stubBody = Buffer.from('FAKEVIDEOCONTENT-NOT-A-REAL-MP4-BUT-FINE-FOR-DOWNLOAD-TEST');
+const slowBody = Buffer.alloc(4096);
 let flakyFail = true;
 const stub = http.createServer((req, res) => {
   if (req.url === '/fake.mp4') {
@@ -38,6 +40,16 @@ const stub = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(stubBody.length) });
       res.end(stubBody);
     }
+  } else if (req.url === '/slow.mp4') {
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(slowBody.length) });
+    let i = 0;
+    const timer = setInterval(() => {
+      res.write(slowBody.subarray(0, 256));
+      if (++i >= 16) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 400);
   } else {
     res.writeHead(404);
     res.end();
@@ -46,6 +58,16 @@ const stub = http.createServer((req, res) => {
 await new Promise((res) => stub.listen(0, '127.0.0.1', res));
 const STUB_URL = `http://127.0.0.1:${stub.address().port}/fake.mp4`;
 const FLAKY_URL = `http://127.0.0.1:${stub.address().port}/flaky.mp4`;
+const SLOW_URL = `http://127.0.0.1:${stub.address().port}/slow.mp4`;
+
+const waitStatus = async (id, statuses, timeoutMs = 30000) => {
+  for (let i = 0; i < timeoutMs / 300; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    const t = (await j('/api/tasks')).body.tasks.find((x) => x.id === id);
+    if (t && statuses.includes(t.status)) return t;
+  }
+  return null;
+};
 
 const j = (p, opts) => fetch(BASE + p, opts).then(async (r) => ({ status: r.status, body: await r.json() }));
 const post = (p, body) => j(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
@@ -273,6 +295,50 @@ test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', 
 test('POST /api/download: 重复链接去重为一个任务', async () => {
   const { body } = await post('/api/download', { input: `${STUB_URL} ${STUB_URL}` });
   assert.equal(body.tasks.length, 1, '相同链接应去重');
+});
+
+// ---------- 暂停 / 终止 / 统计 ----------
+test('暂停 → 恢复：运行中任务可暂停并断点续传完成', { timeout: 90000 }, async () => {
+  const outDir = path.join(tmpRoot, 'pause-dl');
+  const { body } = await post('/api/download', { input: SLOW_URL, outDir });
+  const id = body.tasks[0].id;
+  // 等到下载中
+  const running = await waitStatus(id, ['running', 'done'], 20000);
+  assert.ok(running, '任务应开始');
+  if (running.status === 'done') return; // 桩太快直接完成，跳过后续
+  // 暂停
+  const p = await post('/api/pause', { id });
+  assert.equal(p.status, 200, p.body?.error);
+  const paused = await waitStatus(id, ['paused'], 10000);
+  assert.equal(paused?.status, 'paused', '应变为已暂停');
+  assert.equal(paused.speed, null);
+  // 恢复（retry）
+  const r2 = await post('/api/retry', { id });
+  assert.equal(r2.status, 200);
+  const done = await waitStatus(id, ['done'], 60000);
+  assert.equal(done?.status, 'done', '恢复后应完成');
+  assert.ok(done.file?.endsWith('.mp4'));
+});
+
+test('终止：运行中任务可终止', { timeout: 60000 }, async () => {
+  const outDir = path.join(tmpRoot, 'cancel-dl');
+  const { body } = await post('/api/download', { input: SLOW_URL, outDir });
+  const id = body.tasks[0].id;
+  const running = await waitStatus(id, ['running', 'done'], 20000);
+  assert.ok(running);
+  if (running.status === 'done') return;
+  const c = await post('/api/cancel', { id });
+  assert.equal(c.status, 200, c.body?.error);
+  const cancelled = await waitStatus(id, ['cancelled'], 10000);
+  assert.equal(cancelled?.status, 'cancelled', '应变为已终止');
+  // 非运行任务再终止 → 400
+  assert.equal((await post('/api/cancel', { id })).status, 400);
+});
+
+test('GET /api/stats: 基于历史的累计统计', async () => {
+  const { body } = await j('/api/stats');
+  assert.ok(body.totalFiles >= 1, '至少一条历史');
+  assert.ok(body.totalBytes >= stubBody.length, '累计字节应≥单文件');
 });
 
 // ---------- 失败任务重试 ----------

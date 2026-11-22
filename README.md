@@ -6,7 +6,7 @@
 
 **一个界面精致的视频下载工具 —— YouTube · 抖音 · 哔哩哔哩 · 小红书**
 
-[![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/lijialun/video-downloader/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/SillyShalong/video-downloader/releases)
 [![Electron](https://img.shields.io/badge/Electron-45-9feaf9?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)](https://react.dev/)
 [![Ant Design](https://img.shields.io/badge/Ant_Design-6-1677ff?logo=antdesign&logoColor=white)](https://ant.design/)
@@ -31,13 +31,13 @@
 | 🎞 **清晰度自选** | 最佳 / 1080p / 720p / 540p / 360p | B 站支持 SESSDATA 登录解锁高清晰度 |
 | 🗂 **下载历史** | 元数据持久化（原始链接/目标路径），重启不丢 | 一键「打开文件」（系统默认播放器）或「打开文件夹」定位 |
 | 🌐 **代理支持** | HTTP / SOCKS5，一键测试连通 | 抖音/小红书智能直连不走代理 |
-| 🔁 **稳定下载** | 瞬时错误（403/超时）自动重试 | 失败任务一键手动重试 |
+| 🔁 **稳定下载** | 瞬时错误（403/超时）自动重试，**支持暂停/终止**（断点续传） | 实时速度 / 剩余时间 / 已下载量 + 累计统计 |
 | 🖥 **双形态** | Electron 桌面应用（原生目录选择框） | CLI 命令行（脚本友好） |
 | 🧪 **质量保障** | 46 项自动化测试（单元/服务端/GUI 无头浏览器回归） | 下载中零闪烁（DOM 增量渲染） |
 
 ## 📥 下载安装
 
-**普通用户（推荐）**：到 [Releases](https://github.com/lijialun/video-downloader/releases) 下载最新版：
+**普通用户（推荐）**：到 [Releases](https://github.com/SillyShalong/video-downloader/releases) 下载最新版：
 
 - `VideoDownloader-x.y.z-x64.exe` — 安装包（可选安装目录、创建桌面快捷方式）
 - `VideoDownloader-Portable-x.y.z-x64.exe` — 便携版（免安装，双击即用）
@@ -47,7 +47,7 @@
 **从源码运行**：
 
 ```bash
-git clone https://github.com/lijialun/video-downloader.git
+git clone https://github.com/SillyShalong/video-downloader.git
 cd video-downloader
 npm install          # 安装依赖（Electron / React / AntD）
 npm run setup        # 下载 yt-dlp / ffmpeg / deno 到 bin/
