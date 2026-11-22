@@ -41,14 +41,12 @@ if (!existsSync(ffmpeg) || force) {
     'ffmpeg（约 200MB）',
   );
   console.log('解压 ffmpeg.exe ...');
-  const r = spawnSync(
-    'powershell',
-    ['-NoProfile', '-Command', `Expand-Archive -LiteralPath "${zip}" -DestinationPath "${tmp}\\out" -Force`],
-    { stdio: 'inherit' },
-  );
-  if (r.status !== 0) throw new Error('解压失败');
-  // zip 内层目录名带版本号（随上游构建变化），动态发现而非硬编码
+  // 用 Windows 自带 bsdtar 解压（原生支持 zip；Expand-Archive 在 CI 的 PS 上有参数绑定问题）
   const outDir = path.join(tmp, 'out');
+  mkdirSync(outDir, { recursive: true });
+  const r = spawnSync('tar', ['-xf', zip, '-C', outDir], { stdio: 'inherit' });
+  if (r.status !== 0) throw new Error('解压失败（tar 退出码 ' + r.status + '）');
+  // zip 内层目录名带版本号（随上游构建变化），动态发现而非硬编码
   const inner = readdirSync(outDir).find((d) => existsSync(path.join(outDir, d, 'bin', 'ffmpeg.exe')));
   if (!inner) throw new Error('解压后未找到 bin/ffmpeg.exe');
   renameSync(path.join(outDir, inner, 'bin', 'ffmpeg.exe'), ffmpeg);
