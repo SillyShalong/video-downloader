@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { matchSite } from './sites.mjs';
 import { downloadDouyin } from './douyin.mjs';
 import { downloadXiaohongshu } from './xiaohongshu.mjs';
+import { downloadMissav } from './missav.mjs';
 import { loadConfig } from './config.mjs';
 import { ytDlpName, ffmpegName, killTree } from './platform.mjs';
 
@@ -197,6 +198,10 @@ export async function download(url, opts = {}) {
   if (site?.engine === 'xiaohongshu') {
     // 小红书同为国内站，不走代理
     return downloadXiaohongshu(url, { ...opts, outDir: opts.outDir ?? DEFAULT_OUT_DIR });
+  }
+  if (site?.engine === 'missav') {
+    // Cloudflare+HLS 站点：不走代理（走无头浏览器）
+    return downloadMissav(url, { ...opts, outDir: opts.outDir ?? DEFAULT_OUT_DIR });
   }
   // 代理 / B站登录态：调用方显式传入 > config.json
   const cfg = loadConfig();

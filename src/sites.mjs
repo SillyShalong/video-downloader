@@ -1,4 +1,5 @@
 // 站点配置：每个站点有自己的默认格式策略，未匹配的 URL 走 yt-dlp 默认行为
+import { loadConfig } from './config.mjs';
 
 const YOUTUBE_HOSTS = new Set([
   'youtube.com',
@@ -51,6 +52,16 @@ const sites = [
     engine: 'xiaohongshu',
     match: (url) =>
       ['xiaohongshu.com', 'www.xiaohongshu.com', 'xhslink.com', 'www.xhslink.com'].includes(url.hostname),
+  },
+  {
+    // Cloudflare+HLS 站点（无头 Edge 过 CF → 页面提取 m3u8 → yt-dlp HLS 下载）
+    // 站点列表从 config.json 的 hlsSites 数组读取（不硬编码在代码里）
+    id: 'hls-generic',
+    engine: 'missav',
+    match: (url) => {
+      const cfg = loadConfig().hlsSites || [];
+      return cfg.some((d) => url.hostname === d || url.hostname.endsWith(`.${d}`));
+    },
   },
 ];
 
