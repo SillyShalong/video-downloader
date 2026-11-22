@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Button,
   Card,
   Empty,
@@ -187,8 +188,28 @@ export default function App() {
 
   const [tasks, setTasks] = useState(() => new Map());
   const [stats, setStats] = useState(null);
+  const [connError, setConnError] = useState(null); // 远程模式连接失败提示
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
+
+  // 远程模式：启动时探测服务器连通性，失败给明确指引（而非把请求失败当"未识别到链接"）
+  useEffect(() => {
+    const base = serverBase();
+    if (!base) return undefined; // 本机模式无需探测
+    let alive = true;
+    const probe = () => {
+      fetch(base + '/api/config')
+        .then((r) => (r.ok ? null : Promise.reject(new Error('HTTP ' + r.status))))
+        .then(() => alive && setConnError(null))
+        .catch(() => alive && setConnError(base));
+    };
+    probe();
+    const timer = setInterval(probe, 10000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
 
   const refreshStats = useCallback(() => {
     fetch(serverBase() + '/api/stats').then((r) => r.json()).then(setStats).catch(() => {});
@@ -228,12 +249,20 @@ export default function App() {
       return;
     }
     const timer = setTimeout(() => {
-      api.parse(text).then((r) => {
-        setParsed(r);
-        const hasDouyin = (r.urls || []).some((u) => u.site === 'douyin');
-        setAudioDisabled(hasDouyin);
-        if (hasDouyin) setAudio(false);
-      }).catch(() => {});
+      api
+        .parse(text)
+        .then((r) => {
+          setConnError(null);
+          setParsed(r);
+          const hasDouyin = (r.urls || []).some((u) => u.site === 'douyin');
+          setAudioDisabled(hasDouyin);
+          if (hasDouyin) setAudio(false);
+        })
+        .catch(() => {
+          // 请求失败 ≠ 未识别到链接：给出可行动的提示
+          setParsed({ urls: [] });
+          setConnError(serverBase() || '本机服务');
+        });
     }, 350);
     return () => clearTimeout(timer);
   }, [inputText]);
@@ -434,6 +463,18 @@ export default function App() {
         </Card>
       </div>
 
+      {/* 远程模式连接失败横幅 */}
+      {connError && serverBase() && (
+        <Alert
+          className="conn-alert"
+          type="error"
+          showIcon
+          message={`无法连接服务器 ${connError}`}
+          description="请确认：① 桌面端已运行 node gui.mjs --lan；② 手机与电脑在同一 Wi-Fi；③ ⚙ 设置里的服务器地址正确（形如 http://192.168.1.19:8321）。"
+          closable={false}
+        />
+      )}
+
       {/* 输入区 */}
       <Card>
         <Text type="secondary" className="tag-label">视频链接 / 分享口令（支持多条，混合站点）</Text>
@@ -454,7 +495,10 @@ export default function App() {
             </Tag>
           ))}
           {parsed.urls?.length > 0 && <span className="count">共 {parsed.urls.length} 条</span>}
-          {inputText.trim() && parsed.urls?.length === 0 && <Tag>未识别到链接</Tag>}
+          {inputText.trim() && parsed.urls?.length === 0 && connError && serverBase() && (
+            <Tag color="error">无法连接服务器，请检查远程模式设置</Tag>
+          )}
+          {inputText.trim() && parsed.urls?.length === 0 && !(connError && serverBase()) && <Tag>未识别到链接</Tag>}
         </div>
 
         <Flex gap={14} wrap="wrap" align="flex-end" className="controls">

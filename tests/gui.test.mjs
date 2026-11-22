@@ -191,6 +191,30 @@ test('GUI: 失败任务重试按钮 → 点按后成功', { skip: !browser, time
   assert.equal(await page.locator('.task.error').count(), 0, '失败卡应已被复位');
 });
 
+test('GUI[回归]: 远程模式服务器不可达时给出明确连接错误（不再误报"未识别到链接"）', { skip: !browser }, async () => {
+  // 注入不可达的服务器地址（模拟安卓 App 未配置/配错服务器）
+  await page.evaluate(() => { localStorage.setItem('vd.server', 'http://127.0.0.1:9'); });
+  await page.reload();
+  await page.waitForSelector('#input');
+  // 连接横幅出现
+  await page.locator('.conn-alert').waitFor({ state: 'visible', timeout: 8000 });
+  // 输入链接后显示连接错误，而非"未识别到链接"
+  await page.evaluate(() => {
+    const ta = document.getElementById('input');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(ta, 'https://b23.tv/90wJKGO');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForTimeout(900);
+  const detected = await page.evaluate(() => document.querySelector('.detected')?.textContent || '');
+  assert.ok(detected.includes('无法连接服务器'), '应显示连接错误: ' + detected);
+  assert.ok(!detected.includes('未识别到链接'), '不应误报未识别');
+  // 清理：恢复本机模式
+  await page.evaluate(() => localStorage.removeItem('vd.server'));
+  await page.reload();
+  await page.waitForSelector('#input');
+});
+
 test('GUI[回归]: 下载中任务卡不整卡重建（防闪烁）', { skip: !browser, timeout: 90000 }, async () => {
   await page.fill('#input', SLOW_URL);
   await page.click('#btn');
