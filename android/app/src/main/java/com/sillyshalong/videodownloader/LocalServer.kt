@@ -213,7 +213,13 @@ class LocalServer private constructor(port: Int, private val ctx: Context) : Nan
                     } catch (_: InterruptedException) {
                         null
                     }
-                    if (buf == null) return ':'.code // SSE 注释行 keepalive
+                    if (buf == null) {
+                        // SSE 注释行 keepalive——必须带换行，否则浏览器解析器
+                        // 会把 ':' 缓冲住并吞掉后续所有事件行
+                        buf = ": keepalive\n\n".toByteArray()
+                        pos = 0
+                        continue
+                    }
                     pos = 0
                 }
             }

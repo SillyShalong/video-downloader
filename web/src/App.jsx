@@ -471,7 +471,7 @@ export default function App() {
           <img src={logoUrl} alt="logo" />
         </div>
         <div className="ttl">
-          <h1>Video Downloader <Tag className="ver">v0.4</Tag></h1>
+          <h1>Video Downloader <Tag className="ver">v1.7.0</Tag></h1>
           <div className="sub">YouTube · 抖音 · B站 · 小红书 · 更多站点</div>
         </div>
         <Button
