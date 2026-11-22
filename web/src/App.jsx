@@ -3,9 +3,11 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Empty,
   Flex,
   Input,
+  List,
   Modal,
   Progress,
   Segmented,
@@ -189,6 +191,8 @@ export default function App() {
   const [tasks, setTasks] = useState(() => new Map());
   const [stats, setStats] = useState(null);
   const [connError, setConnError] = useState(null); // 远程模式连接失败提示
+  const [selection, setSelection] = useState(null); // 多视频源选择 {entries, checked, input, outDir}
+  const [submitting, setSubmitting] = useState(false);
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
 
@@ -276,12 +280,43 @@ export default function App() {
     }
     const od = outdir.trim() || null;
     if (od) localStorage.setItem('vd.outdir', od);
-    const r = await api.download({ input: text, quality: quality || null, audio, outDir: od });
+    setSubmitting(true);
+    try {
+      // 探测是否多视频源（播放列表/合集），是则弹选择框
+      const insp = await api.inspect(text).catch(() => ({ multi: false }));
+      if (insp.multi && insp.entries?.length > 1) {
+        setSelection({ entries: insp.entries, checked: insp.entries.map(() => true), input: text, outDir: od });
+        return; // 弹窗等用户确认
+      }
+      await doDownload(text, od, null);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const doDownload = async (text, od, items) => {
+    const r = await api.download({ input: text, quality: quality || null, audio, outDir: od, playlistItems: items });
     if (r.error) message.error(r.error);
     else {
-      message.success(`已添加 ${r.tasks.length} 个下载任务`);
+      message.success(`已添加 ${r.tasks.length} 个下载任务${items ? `（选中 ${items.length} 集）` : ''}`);
       setInputText('');
       setParsed({ urls: [] });
+      setSelection(null);
+    }
+  };
+
+  const confirmSelection = async () => {
+    if (!selection) return;
+    const items = selection.entries.filter((_, i) => selection.checked[i]).map((e) => e.index);
+    if (items.length === 0) {
+      message.warning('请至少选择一个视频');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await doDownload(selection.input, selection.outDir, items);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -556,8 +591,8 @@ export default function App() {
             </Flex>
           </Flex>
 
-          <Button id="btn" type="primary" icon={<DownloadOutlined />} onClick={submit}>
-            开始下载
+          <Button id="btn" type="primary" icon={<DownloadOutlined />} onClick={submit} loading={submitting}>
+            {submitting ? '探测中…' : '开始下载'}
           </Button>
         </Flex>
       </Card>
@@ -586,6 +621,52 @@ export default function App() {
         CLI 方式同样可用：<code>node cli.mjs &lt;链接/口令&gt; [-q 1080] [--audio] [-o 目录]</code>
         <br />下载文件统一优先 H.264 编码，保证系统播放器可直接播放
       </footer>
+
+      {/* 多视频源选择弹窗 */}
+      <Modal
+        title={`选择要下载的视频（共 ${selection?.entries?.length ?? 0} 个）`}
+        open={!!selection}
+        onCancel={() => setSelection(null)}
+        width={620}
+        footer={[
+          <Button key="cancel" onClick={() => setSelection(null)}>取消</Button>,
+          <Button key="all" onClick={() => setSelection((s) => s && { ...s, checked: s.entries.map(() => true) })}>全选</Button>,
+          <Button key="none" onClick={() => setSelection((s) => s && { ...s, checked: s.entries.map(() => false) })}>全不选</Button>,
+          <Button key="ok" type="primary" onClick={confirmSelection} loading={submitting}>
+            下载选中（{selection?.checked?.filter(Boolean).length ?? 0} 个）
+          </Button>,
+        ]}
+      >
+        <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
+          <List
+            size="small"
+            dataSource={selection?.entries ?? []}
+            renderItem={(item, idx) => (
+              <List.Item
+                actions={[
+                  <Checkbox
+                    key="chk"
+                    checked={selection?.checked?.[idx]}
+                    onChange={(e) =>
+                      setSelection((s) => {
+                        if (!s) return s;
+                        const c = [...s.checked];
+                        c[idx] = e.target.checked;
+                        return { ...s, checked: c };
+                      })
+                    }
+                  />,
+                ]}
+              >
+                <List.Item.Meta
+                  title={<Text ellipsis style={{ maxWidth: 420 }}>{item.title}</Text>}
+                  description={`#${item.index}${item.duration ? ` · ${fmtEta(item.duration)}` : ''}`}
+                />
+              </List.Item>
+            )}
+          />
+        </div>
+      </Modal>
 
       {/* 目录选择弹窗（网页模式） */}
       <Modal

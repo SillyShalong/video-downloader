@@ -297,6 +297,24 @@ test('POST /api/download: 重复链接去重为一个任务', async () => {
   assert.equal(body.tasks.length, 1, '相同链接应去重');
 });
 
+// ---------- 多视频源探测 ----------
+test('POST /api/inspect: 单视频 URL 返回 multi:false（本地桩单文件）', { timeout: 30000 }, async () => {
+  const { body } = await post('/api/inspect', { input: STUB_URL });
+  assert.equal(body.multi, false);
+  assert.deepEqual(body.entries, []);
+});
+
+test('POST /api/inspect: 无链接 → 400', async () => {
+  assert.equal((await post('/api/inspect', { input: '纯文本' })).status, 400);
+});
+
+test('POST /api/download: playlistItems 传入任务并可从 /api/tasks 读回', { timeout: 60000 }, async () => {
+  const outDir = path.join(tmpRoot, 'items-dl');
+  const { body } = await post('/api/download', { input: STUB_URL, outDir, playlistItems: [1, 3] });
+  assert.equal(body.tasks.length, 1);
+  assert.deepEqual(body.tasks[0].playlistItems, [1, 3]);
+});
+
 // ---------- 暂停 / 终止 / 统计 ----------
 test('暂停 → 恢复：运行中任务可暂停并断点续传完成', { timeout: 90000 }, async () => {
   const outDir = path.join(tmpRoot, 'pause-dl');

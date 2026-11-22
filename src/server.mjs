@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { download, DEFAULT_OUT_DIR } from './downloader.mjs';
+import { download, inspectUrl, DEFAULT_OUT_DIR } from './downloader.mjs';
 import { matchSite, extractUrls } from './sites.mjs';
 import { loadConfig, saveConfig, isValidProxy } from './config.mjs';
 import { loadHistory, appendHistory } from './history.mjs';
@@ -114,6 +114,7 @@ export function createApp(opts = {}) {
       log: t.log,
       quality: t.quality,
       audio: t.audio,
+      playlistItems: t.playlistItems ?? null,
       createdAt: t.createdAt,
     };
   }
@@ -139,6 +140,7 @@ export function createApp(opts = {}) {
           outDir: t.outDir,
           quality: t.quality,
           audioOnly: t.audio,
+          playlistItems: t.playlistItems,
           signal: abort.signal,
           onEvent: (ev) => {
             if (ev.type === 'progress') {
@@ -208,7 +210,7 @@ export function createApp(opts = {}) {
     pumping = false;
   }
 
-  function createTasks(input, { quality, audio, outDir }) {
+  function createTasks(input, { quality, audio, outDir, playlistItems }) {
     const text = String(input || '').trim();
     let urls = extractUrls(text);
     if (urls.length === 0 && /^https?:\/\//i.test(text)) urls = [text];
@@ -235,6 +237,7 @@ export function createApp(opts = {}) {
         outDir: path.resolve(outDir || DEFAULT_OUT_DIR),
         quality: quality || null,
         audio: !!audio,
+        playlistItems: Array.isArray(playlistItems) && playlistItems.length > 0 ? playlistItems : null,
         createdAt: Date.now(),
       };
       tasks.set(task.id, task);
@@ -309,6 +312,25 @@ export function createApp(opts = {}) {
         send(200, {
           urls: [...new Set(urls)].map((url) => ({ url, site: matchSite(url)?.id ?? 'generic' })),
         });
+        return;
+      }
+
+      if (req.method === 'POST' && req.url === '/api/inspect') {
+        const body = await readJson(req);
+        const text = String(body.input || '').trim();
+        let urls = extractUrls(text);
+        if (urls.length === 0 && /^https?:\/\//i.test(text)) urls = [text];
+        if (urls.length === 0) {
+          send(400, { error: '未在输入中找到链接' });
+          return;
+        }
+        // 仅探测第一条（多 URL 由用户自行分次提交）
+        try {
+          const r = await inspectUrl(urls[0]);
+          send(200, r);
+        } catch (err) {
+          send(200, { multi: false, entries: [], error: err.message.split('\n').slice(-2).join('\n') });
+        }
         return;
       }
 

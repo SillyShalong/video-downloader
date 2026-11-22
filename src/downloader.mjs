@@ -82,7 +82,7 @@ async function ensurePlayableFiles(files, emit) {
 }
 
 export function buildArgs(url, opts = {}) {
-  const { outDir = DEFAULT_OUT_DIR, quality, audioOnly, proxy, bilibiliSessdata, extraArgs = [] } = opts;
+  const { outDir = DEFAULT_OUT_DIR, quality, audioOnly, proxy, bilibiliSessdata, playlistItems, extraArgs = [] } = opts;
   const site = matchSite(url);
 
   const args = [
@@ -102,6 +102,11 @@ export function buildArgs(url, opts = {}) {
 
   if (proxy) args.push('--proxy', proxy); // http/socks 均支持
 
+  // 多视频源：用户选中的分集（1-based 序号列表，如 [1,3,5] → "1,3,5"）
+  if (Array.isArray(playlistItems) && playlistItems.length > 0) {
+    args.push('--playlist-items', playlistItems.map(Number).filter(Number.isInteger).join(','));
+  }
+
   // B 站登录态（解锁 720p+）：SESSDATA 来自浏览器 Cookie，手动复制一次即可
   if (site?.id === 'bilibili' && bilibiliSessdata) {
     args.push('--add-headers', `Cookie: SESSDATA=${bilibiliSessdata}`);
@@ -120,6 +125,63 @@ export function buildArgs(url, opts = {}) {
 
   args.push(...extraArgs);
   return args;
+}
+
+/**
+ * 探测 URL 是否含多个视频源（播放列表/合集/用户上传页等）。
+ * @returns {Promise<{multi: boolean, entries: Array<{index:number,id:string,title:string,duration:number|null}>}>}
+ */
+export async function inspectUrl(url, { proxy } = {}) {
+  const cfg = loadConfig();
+  const px = proxy !== undefined ? proxy : cfg.proxy;
+  const args = [
+    url,
+    '--flat-playlist',
+    '--dump-single-json',
+    '--encoding', 'utf-8',
+    '--socket-timeout', '15',
+  ];
+  if (px) args.push('--proxy', px);
+  return new Promise((resolve, reject) => {
+    const child = spawn(YTDLP, args, {
+      windowsHide: true,
+      env: {
+        ...process.env,
+        PATH: `${BIN_DIR}${path.delimiter}${process.env.PATH ?? ''}`,
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1',
+      },
+    });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => killTree(child), 60000);
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (c) => (out += c));
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (c) => (err += c));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(err.split('\n').filter(Boolean).slice(-3).join('\n') || `yt-dlp 退出码 ${code}`));
+      try {
+        const j = JSON.parse(out);
+        if (j._type === 'playlist' && Array.isArray(j.entries) && j.entries.length > 1) {
+          resolve({
+            multi: true,
+            entries: j.entries.map((e, i) => ({
+              index: i + 1,
+              id: e?.id ?? String(i + 1),
+              title: e?.title ?? `#${i + 1}`,
+              duration: e?.duration ?? null,
+            })),
+          });
+        } else {
+          resolve({ multi: false, entries: [] });
+        }
+      } catch (e) {
+        reject(new Error('解析 yt-dlp 输出失败: ' + e.message));
+      }
+    });
+  });
 }
 
 /**

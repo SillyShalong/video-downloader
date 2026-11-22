@@ -15,6 +15,7 @@ const post = (p, body) =>
 
 export const api = {
   parse: (input) => post('/api/parse', { input }),
+  inspect: (input) => post('/api/inspect', { input }),
   download: (payload) => post('/api/download', payload),
   retry: (id) => post('/api/retry', { id }),
   pause: (id) => post('/api/pause', { id }),

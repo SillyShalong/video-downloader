@@ -141,6 +141,15 @@ test('buildArgs: 仅音频走 -x mp3', () => {
   assert.equal(args[args.indexOf('--audio-format') + 1], 'mp3');
 });
 
+test('buildArgs: 多视频源 playlistItems 映射为 --playlist-items', () => {
+  const args = buildArgs('https://youtu.be/x', { playlistItems: [1, 3, 5] });
+  const i = args.indexOf('--playlist-items');
+  assert.equal(args[i + 1], '1,3,5');
+  // 空数组/不传不添加
+  assert.equal(buildArgs('https://youtu.be/x', {}).indexOf('--playlist-items'), -1);
+  assert.equal(buildArgs('https://youtu.be/x', { playlistItems: [] }).indexOf('--playlist-items'), -1);
+});
+
 // ---------- 代理地址校验 ----------
 test('isValidProxy: 合法与非法', () => {
   for (const ok of ['', 'http://127.0.0.1:7890', 'https://p.example.com:8080', 'socks5://1.2.3.4:1080', 'socks5h://a:1', 'socks4://a:1']) {
