@@ -194,7 +194,7 @@ object BiliEngine {
         // 预热 buvid3（playurl 风控所需）
         try {
             val b3 = java.util.UUID.randomUUID().toString().replace("-", "").uppercase()
-            cm.setCookie("https://www.bilibili.com", "buvid3=$b3infoc")
+            cm.setCookie("https://www.bilibili.com", "buvid3=${b3}infoc")
         } catch (_: Exception) {}
         return web
     }
