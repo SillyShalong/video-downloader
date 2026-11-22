@@ -133,7 +133,15 @@ export async function downloadMissav(url, opts = {}) {
         if (!t) continue;
         const m = t.match(/^\[download\]\s+(\d+(?:\.\d+)?)%/);
         if (m) {
-          onEvent?.({ type: 'progress', percent: parseFloat(m[1]), raw: t });
+          // 解析速度/ETA/总量（与主引擎 parseProgressDetail 同逻辑，避免循环依赖）
+          const dm = t.match(/of\s+~?\s*([\d.]+)\s*(KiB|MiB|GiB)(?:.*?at\s+([\d.]+)\s*(KiB|MiB|GiB)\/s)?(?:.*?ETA\s+([\d:]+))?/i);
+          const UNIT = { KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3 };
+          const detail = dm ? {
+            total: Number(dm[1]) * (UNIT[dm[2]] || 1),
+            speed: dm[3] ? Number(dm[3]) * (UNIT[dm[4]] || 1) : null,
+            eta: dm[5] ? dm[5].split(':').reverse().reduce((a, p, i) => a + Number(p) * 60 ** i, 0) : null,
+          } : {};
+          onEvent?.({ type: 'progress', percent: parseFloat(m[1]), raw: t, ...detail });
         } else if (!t.startsWith('[') && existsSync(t)) {
           files.push(t);
           onEvent?.({ type: 'file', file: t });
