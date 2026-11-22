@@ -70,44 +70,50 @@ const STATUS_ICON = {
 const STATUS_TEXT_KEY = { queued: 'stQueued', running: 'stRunning', done: 'stDone', error: 'stError', paused: 'stPaused', cancelled: 'stCancelled' };
 const stText = (s) => t(STATUS_TEXT_KEY[s] || s);
 
-/* ---- 紧凑任务行（单行 + 进度条，点击开详情抽屉） ---- */
+/* ---- 紧凑任务行（主信息行 + 运行中带完整进度条，点击开详情抽屉） ---- */
 const TaskRow = memo(
   function TaskRow({ task, onDetail, onPause, onCancel, onRetry, onDelete }) {
-    const pct = task.percent > 0 ? Math.min(100, t.percent) : 0;
-    const pctText = task.status === 'done' ? '100%' : pct > 0 ? pct.toFixed(0) + '%' : '';
-    const qLabel = task.audio ? 'MP3' : task.quality ? task.quality + 'P' : '';
+    const pct = Math.min(100, Math.max(0, task.percent || 0));
     const isRunning = task.status === 'running';
+    // 运行中始终显示百分比（含 0%），完成后 100%，其他状态按需
+    const pctText = task.status === 'done' ? '100%' : isRunning ? pct.toFixed(0) + '%' : pct > 0 ? pct.toFixed(0) + '%' : '';
+    const qLabel = task.audio ? 'MP3' : task.quality ? task.quality + 'P' : '';
     const canDelete = !isRunning && task.status !== 'queued';
 
     return (
       <div className={`trow ${task.status}`} onClick={() => onDetail(task)}>
-        <div className={`tsi ${task.status}`}>{STATUS_ICON[task.status] ?? null}</div>
-        <span className="t-title" title={task.title || task.url}>{task.title || midTrunc(task.url, 40, 20)}</span>
-        <span className="chip sm">{SITE_LABEL[task.site] || task.site}</span>
-        {qLabel && <span className="chip sm q">{qLabel}</span>}
-        {isRunning && task.speed > 0 && <span className="t-speed">{fmtSpeed(task.speed)}</span>}
-        {task.sizeBytes > 0 && !isRunning && <span className="t-size">{fmtBytes(task.sizeBytes)}</span>}
-        {isRunning && task.downloaded > 0 && <span className="t-size">{fmtBytes(task.downloaded)}</span>}
-        {pctText && <span className="t-pct">{pctText}</span>}
-        <div className="t-actions" onClick={(e) => e.stopPropagation()}>
-          {isRunning && (
-            <>
-              <Button size="small" type="text" data-act="pause" onClick={() => onPause(task.id)}><PauseCircleOutlined /></Button>
-              <Button size="small" type="text" data-act="cancel" onClick={() => onCancel(task.id)}><StopOutlined /></Button>
-            </>
-          )}
-          {(task.status === 'error' || task.status === 'paused' || task.status === 'cancelled') && (
-            <Button size="small" type="text" data-act="retry" onClick={() => onRetry(task.id)}><ReloadOutlined /></Button>
-          )}
-          {canDelete && (
-            <Popconfirm title="删除此历史记录？" onConfirm={() => onDelete(task.id)} okText="删除" cancelText="取消">
-              <Button size="small" type="text" danger><DeleteOutlined /></Button>
-            </Popconfirm>
-          )}
+        <div className="t-line">
+          <div className={`tsi ${task.status}`}>{STATUS_ICON[task.status] ?? null}</div>
+          <span className="t-title" title={task.title || task.url}>{task.title || midTrunc(task.url, 40, 20)}</span>
+          <span className="chip sm">{SITE_LABEL[task.site] || task.site}</span>
+          {qLabel && <span className="chip sm q">{qLabel}</span>}
+          {isRunning && task.speed > 0 && <span className="t-speed">{fmtSpeed(task.speed)}</span>}
+          {task.sizeBytes > 0 && !isRunning && <span className="t-size">{fmtBytes(task.sizeBytes)}</span>}
+          {isRunning && task.downloaded > 0 && <span className="t-size">{fmtBytes(task.downloaded)}</span>}
+          {pctText && <span className="t-pct">{pctText}</span>}
+          <div className="t-actions" onClick={(e) => e.stopPropagation()}>
+            {isRunning && (
+              <>
+                <Button size="small" type="text" data-act="pause" onClick={() => onPause(task.id)}><PauseCircleOutlined /></Button>
+                <Button size="small" type="text" data-act="cancel" onClick={() => onCancel(task.id)}><StopOutlined /></Button>
+              </>
+            )}
+            {(task.status === 'error' || task.status === 'paused' || task.status === 'cancelled') && (
+              <Button size="small" type="text" data-act="retry" onClick={() => onRetry(task.id)}><ReloadOutlined /></Button>
+            )}
+            {canDelete && (
+              <Popconfirm title="删除此历史记录？" onConfirm={() => onDelete(task.id)} okText="删除" cancelText="取消">
+                <Button size="small" type="text" danger><DeleteOutlined /></Button>
+              </Popconfirm>
+            )}
+          </div>
         </div>
+        {/* 运行中：行内完整进度条（pct=0 时用 active 动画表示解析中） */}
         {isRunning && (
           <div className="t-bar">
-            <Progress percent={pct > 0 ? pct : 100} status={pct > 0 ? 'normal' : 'active'} showInfo={false} size={['100%', 3]} />
+            {pct > 0
+              ? <Progress percent={pct} showInfo={false} size={['100%', 5]} />
+              : <Progress percent={100} status="active" showInfo={false} size={['100%', 5]} />}
           </div>
         )}
       </div>
