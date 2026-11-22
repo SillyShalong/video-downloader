@@ -24,7 +24,7 @@ object HttpDownloader {
         fun registerCancel(fn: () -> Unit)
     }
 
-    fun download(ctx: Context, info: BiliEngine.Result, cb: Progress) {
+    fun download(ctx: Context, info: DownloadSpec, cb: Progress) {
         val cancelled = AtomicBoolean(false)
         cb.registerCancel { cancelled.set(true) }
         var lastErr: Exception? = null
@@ -45,7 +45,7 @@ object HttpDownloader {
 
     private fun doDownloadOne(
         ctx: Context,
-        info: BiliEngine.Result,
+        info: DownloadSpec,
         url: String,
         cancelled: AtomicBoolean,
         cb: Progress,
@@ -64,10 +64,10 @@ object HttpDownloader {
             val total = if (body.contentLength() > 0) body.contentLength() else info.totalBytes
 
             // MediaStore：公共下载目录，无需存储权限
-            val name = info.fileName.ifBlank { "bilibili_${System.currentTimeMillis()}.mp4" }
+            val name = info.fileName.ifBlank { "video_${System.currentTimeMillis()}.mp4" }
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
-                put(MediaStore.Downloads.MIME_TYPE, "video/mp4")
+                put(MediaStore.Downloads.MIME_TYPE, if (name.endsWith(".m4a")) "audio/mp4" else "video/mp4")
                 put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/VideoDownloader")
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }

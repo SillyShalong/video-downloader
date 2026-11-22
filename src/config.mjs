@@ -27,3 +27,20 @@ export function saveConfig(patch) {
 export function isValidProxy(p) {
   return /^(https?|socks[45]a?h?):\/\/[^\s]+$/.test(String(p || '').trim()) || String(p || '').trim() === '';
 }
+
+/**
+ * 归一化 HLS 站点域名列表（供设置面板与 API 共用）：
+ * 接受数组或换行/逗号分隔文本；去 scheme、路径、前导 www.；小写；去重；非法项丢弃。
+ */
+export function normalizeHlsSites(input) {
+  const arr = Array.isArray(input) ? input : String(input || '').split(/[\n,;]+/);
+  const out = [];
+  for (const raw of arr) {
+    let d = String(raw).trim().toLowerCase();
+    if (!d) continue;
+    // 去 scheme、去前导 www.、截掉路径/查询、去首尾点
+    d = d.replace(/^https?:\/\//, '').replace(/^www\./, '').split(/[/?#]/)[0].replace(/^\.+|\.+$/g, '');
+    if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d) && !out.includes(d)) out.push(d);
+  }
+  return out;
+}

@@ -180,6 +180,22 @@ test('buildExplorerArgs: 目录直接打开；路径中的引号被剥离', () =
 // ---------- 跨平台抽象（platform.mjs） ----------
 const platform = await import('../src/platform.mjs');
 
+// ---------- HLS 站点归一化（设置面板 + config.json 同步） ----------
+const { normalizeHlsSites } = await import('../src/config.mjs');
+
+test('normalizeHlsSites: 去 scheme/www/路径、小写、去重、过滤非法', () => {
+  assert.deepEqual(
+    normalizeHlsSites(['https://www.Example.com/watch/1', 'MISSAV.ws', 'https://missav.ws', 'not a domain', '', 'missav.ws']),
+    ['example.com', 'missav.ws'],
+  );
+  assert.deepEqual(
+    normalizeHlsSites('a.org,,b.org;\nhttps://c.org/path?q=1'),
+    ['a.org', 'b.org', 'c.org'],
+  );
+  assert.deepEqual(normalizeHlsSites([]), []);
+  assert.deepEqual(normalizeHlsSites('垃圾输入'), []);
+});
+
 test('platform: revealCommand 三平台命令形态', () => {
   // Windows：explorer + verbatim（引号仅包路径的回归约束）
   const w = platform.revealCommand('C:\\a b\\v.mp4', false, 'win32');

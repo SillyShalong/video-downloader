@@ -219,6 +219,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [proxyInput, setProxyInput] = useState('');
   const [sessdataInput, setSessdataInput] = useState('');
+  const [hlsInput, setHlsInput] = useState(''); // 编辑中的 HLS 站点文本（每行一个域名）
+  const [hlsSitesCount, setHlsSitesCount] = useState(0); // 已保存到 config.json 的数量
   const [proxyStatus, setProxyStatus] = useState(null); // {ok, text}
   const [serverAddr, setServerAddr] = useState(() => localStorage.getItem('vd.server') || '');
 
@@ -265,6 +267,9 @@ export default function App() {
     api.getConfig().then((c) => {
       setProxyInput(c.proxy || '');
       setSessdataInput(c.bilibiliSessdata || '');
+      const sites = c.hlsSites || [];
+      setHlsInput(sites.join('\n'));
+      setHlsSitesCount(sites.length);
     }).catch(() => {});
     api.getTasks().then((d) => setTasks(new Map(d.tasks.map((t) => [t.id, t])))).catch(() => {});
     const es = new EventSource(serverBase() + '/api/events');
@@ -454,6 +459,16 @@ export default function App() {
     if (r?.error) message.error(r.error);
     else message.success(sessdataInput.trim() ? 'SESSDATA 已保存，B 站将按登录身份下载' : '已清除 SESSDATA（回到游客模式）');
   };
+  // HLS 站点保存：每行一个域名，服务端归一化后写入 config.json
+  const saveHlsSites = async () => {
+    const sites = hlsInput.split('\n').map((s) => s.trim()).filter(Boolean);
+    const r = await api.saveHlsSites(sites).catch(() => null);
+    if (r?.error) { message.error(r.error); return; }
+    const saved = r.hlsSites || [];
+    setHlsInput(saved.join('\n')); // 回填归一化后的值
+    setHlsSitesCount(saved.length);
+    message.success(t('hlsSaved', { n: saved.length }));
+  };
 
   const taskList = useMemo(
     () => [...tasks.values()].sort((a, b) => b.createdAt - a.createdAt),
@@ -471,7 +486,7 @@ export default function App() {
           <img src={logoUrl} alt="logo" />
         </div>
         <div className="ttl">
-          <h1>Video Downloader <Tag className="ver">v1.7.0</Tag></h1>
+          <h1>Video Downloader <Tag className="ver">v1.8.0</Tag></h1>
           <div className="sub">YouTube · 抖音 · B站 · 小红书 · 更多站点</div>
         </div>
         <Button
@@ -540,6 +555,26 @@ export default function App() {
               </Button>
             </Flex>
             <Text type="secondary" className="note">安卓 App / 手机浏览器（PWA）连桌面服务时填；桌面本机使用请留空。</Text>
+
+            <Text type="secondary" className="tag-label" style={{ marginTop: 8 }}>{t('hlsTitle')}</Text>
+            <Input.TextArea
+              id="hls-input"
+              rows={3}
+              placeholder={t('hlsPlaceholder')}
+              value={hlsInput}
+              onChange={(e) => setHlsInput(e.target.value)}
+              style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}
+              spellCheck={false}
+            />
+            <Flex gap={8} align="center" wrap="wrap">
+              <Button id="hls-save" type="primary" onClick={saveHlsSites}>{t('save')}</Button>
+              <span className="count">
+                {hlsSitesCount > 0
+                  ? t('hlsSaved', { n: hlsSitesCount })
+                  : t('hlsEmpty')}
+              </span>
+            </Flex>
+            <Text type="secondary" className="note">{t('hlsNote')}</Text>
 
             <Text type="secondary" className="tag-label" style={{ marginTop: 8 }}>{t('language')}</Text>
             <Segmented

@@ -142,9 +142,9 @@ class TaskEngine(private val ctx: Context) {
         for (i in 0 until urls.length()) {
             val u = urls.getJSONObject(i).getString("url")
             val site = urls.getJSONObject(i).getString("site")
-            if (site != "bilibili") {
-                // 独立模式暂不支持：直接失败并给明确指引
-                val t = Task(newId(), u, site, status = "error", error = "手机独立模式暂不支持该站点（YouTube/抖音/小红书需桌面端）；B站可直接下载")
+            // 独立模式支持：B站 / YouTube。其余站点明确失败并指引走桌面端
+            if (site != "bilibili" && site != "youtube") {
+                val t = Task(newId(), u, site, status = "error", error = "手机独立模式暂不支持该站点（抖音/小红书等需桌面端）；B站/YouTube 可直接下载")
                 t.stage = ""
                 tasks[t.id] = t; broadcast(t); created.add(t)
                 continue
@@ -220,9 +220,12 @@ class TaskEngine(private val ctx: Context) {
     }
 
     private fun runTask(t: Task) {
-        // 1) 解析（WebView 页内取流，主线程创建）
+        // 1) 解析：按站点分发到对应引擎（B站 / YouTube）
         t.stage = "解析中"; broadcast(t)
-        val info = BiliEngine.extract(ctx, t.url, prefs.getString("sessdata", "") ?: "", t.quality)
+        val info = when (t.site) {
+            "youtube" -> YouTubeEngine.extract(t.url, t.quality, t.audio)
+            else -> BiliEngine.extract(ctx, t.url, prefs.getString("sessdata", "") ?: "", t.quality)
+        }
         t.title = info.title
         broadcast(t)
         // 2) 下载（OkHttp → 系统下载目录）

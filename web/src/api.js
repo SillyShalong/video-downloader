@@ -27,6 +27,7 @@ export const api = {
   proxyTest: (proxy) => post('/api/proxy-test', { proxy }),
   saveProxy: (proxy) => post('/api/config', { proxy }),
   saveSessdata: (bilibiliSessdata) => post('/api/config', { bilibiliSessdata }),
+  saveHlsSites: (hlsSites) => post('/api/config', { hlsSites }),
   getConfig: () => fetch(serverBase() + '/api/config').then((r) => r.json()),
   getTasks: () => fetch(serverBase() + '/api/tasks').then((r) => r.json()),
   fsList: (dir) =>

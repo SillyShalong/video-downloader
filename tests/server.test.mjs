@@ -137,6 +137,20 @@ test('GET/POST /api/config: SESSDATA 校验与持久化', async () => {
   assert.equal((await j('/api/config')).body.bilibiliSessdata, '');
 });
 
+test('GET/POST /api/config: hlsSites 归一化保存并读回', async () => {
+  const ok = await post('/api/config', { hlsSites: ['https://www.Example.com/x', 'MISSAV.ws', 'not a domain', 'missav.ws'] });
+  assert.equal(ok.status, 200);
+  // 归一化：scheme/www 剥离、小写、去重、非法丢弃
+  const got = (await j('/api/config')).body.hlsSites;
+  assert.deepEqual(got, ['example.com', 'missav.ws']);
+  // 数组之外的输入形态（换行分隔文本）也支持
+  await post('/api/config', { hlsSites: 'a.org\nb.org' });
+  assert.deepEqual((await j('/api/config')).body.hlsSites, ['a.org', 'b.org']);
+  // 清空
+  await post('/api/config', { hlsSites: [] });
+  assert.deepEqual((await j('/api/config')).body.hlsSites, []);
+});
+
 // ---------- 代理测试 ----------
 test('POST /api/proxy-test: 非法地址 → 400', async () => {
   assert.equal((await post('/api/proxy-test', { proxy: '垃圾' })).status, 400);

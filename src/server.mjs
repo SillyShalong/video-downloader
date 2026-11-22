@@ -16,7 +16,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { download, inspectUrl, DEFAULT_OUT_DIR } from './downloader.mjs';
 import { matchSite, extractUrls } from './sites.mjs';
-import { loadConfig, saveConfig, isValidProxy } from './config.mjs';
+import { loadConfig, saveConfig, isValidProxy, normalizeHlsSites } from './config.mjs';
 import { loadHistory, appendHistory, removeHistory } from './history.mjs';
 import { openCommand, revealCommand, listRoots } from './platform.mjs';
 
@@ -408,6 +408,9 @@ export function createApp(opts = {}) {
             return;
           }
           patch.bilibiliSessdata = sessdata;
+        }
+        if (body.hlsSites !== undefined) {
+          patch.hlsSites = normalizeHlsSites(body.hlsSites);
         }
         saveConfig(patch);
         send(200, { ok: true, ...patch });

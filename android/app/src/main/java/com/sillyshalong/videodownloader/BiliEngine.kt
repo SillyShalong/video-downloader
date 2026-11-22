@@ -17,7 +17,7 @@ object BiliEngine {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     private const val REFERER = "https://www.bilibili.com/"
 
-    class Result(val title: String, val fileName: String, val urls: List<String>, val totalBytes: Long)
+    // 结果统一使用 DownloadSpec（与 YouTube/HLS 引擎一致）
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -26,7 +26,7 @@ object BiliEngine {
         .build()
 
     /** 完整提取流程：短链解析 → view(cid/title) → nav(wbi keys) → playurl(durl 直链) */
-    fun extract(ctx: Context, url: String, sessdata: String, qualityHint: String?): Result {
+    fun extract(ctx: Context, url: String, sessdata: String, qualityHint: String?): DownloadSpec {
         val prefs = ctx.getSharedPreferences("config", Context.MODE_PRIVATE)
         val buvid = getOrCreateBuvid(prefs)
 
@@ -95,7 +95,7 @@ object BiliEngine {
         if (urls.isEmpty()) throw RuntimeException("B站: durl 中无可用地址")
 
         val safe = sanitizeName(title)
-        return Result(
+        return DownloadSpec(
             title = safe,
             fileName = "$safe [$bvid].mp4",
             urls = urls.distinct().take(6),
