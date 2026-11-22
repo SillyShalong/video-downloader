@@ -185,6 +185,13 @@ export function createApp(opts = {}) {
               t.downloaded =
                 ev.downloaded ??
                 (ev.total && t.percent > 0 ? Math.round((ev.total * t.percent) / 100) : null);
+              // 实时日志：最新进度行滚动替换（≥1.2s 一条），避免日志刷屏但保持实时感
+              if (ev.raw && Date.now() - (t._lastLogTs || 0) > 1200) {
+                t._lastLogTs = Date.now();
+                const lastLog = t.log[t.log.length - 1];
+                if (lastLog && lastLog.startsWith('[download]')) t.log[t.log.length - 1] = ev.raw;
+                else t.log.push(ev.raw);
+              }
               emitTask(t, { throttle: true });
             } else if (ev.type === 'title') {
               t.title = ev.title;

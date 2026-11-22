@@ -174,10 +174,10 @@ function DetailDrawer({ task, onClose, onRetry, onOpen, onReveal, onDelete }) {
         )}
 
         {task.log?.length > 0 && (
-          <details className="log">
-            <summary>日志 ({task.log.length})</summary>
-            <pre>{task.log.join('\n')}</pre>
-          </details>
+          <div>
+            <Text type="secondary" className="tag-label">{t('log')} ({task.log.length})</Text>
+            <pre className="log-pre">{task.log.join('\n')}</pre>
+          </div>
         )}
 
         <Flex gap={8} wrap="wrap" style={{ marginTop: 8 }}>
@@ -221,7 +221,7 @@ export default function App() {
   const [connError, setConnError] = useState(null); // 远程模式连接失败提示
   const [selection, setSelection] = useState(null); // 多视频源选择 {entries, checked, input, outDir}
   const [submitting, setSubmitting] = useState(false);
-  const [detailTask, setDetailTask] = useState(null); // 详情抽屉当前任务
+  const [detailId, setDetailId] = useState(null); // 详情抽屉当前任务 id（实时从 tasks 取，日志/进度跟随 SSE 更新）
   const [langTick, setLangTick] = useState(0); // 语言切换时强制重渲染
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -271,7 +271,7 @@ export default function App() {
         if (data.task.status === 'done') refreshStats();
       } else if (data.type === 'delete') {
         setTasks((prev) => { const m = new Map(prev); m.delete(data.id); return m; });
-        setDetailTask((d) => (d?.id === data.id ? null : d));
+        setDetailId((d) => (d === data.id ? null : d));
         refreshStats();
       }
     };
@@ -453,6 +453,8 @@ export default function App() {
     () => [...tasks.values()].sort((a, b) => b.createdAt - a.createdAt),
     [tasks],
   );
+  // 详情抽屉实时任务：SSE 每次更新 tasks 后自动重取（日志/进度实时跟随）
+  const detailTask = detailId ? tasks.get(detailId) ?? null : null;
   const audioOn = audio && !audioDisabled;
 
   return (
@@ -659,7 +661,7 @@ export default function App() {
       ) : (
         <div className="tlist">
           {taskList.map((t) => (
-            <TaskRow key={t.id} task={t} onDetail={setDetailTask} onPause={onPause} onCancel={onCancel} onRetry={onRetry} onDelete={onDelete} />
+            <TaskRow key={t.id} task={t} onDetail={(row) => setDetailId(row.id)} onPause={onPause} onCancel={onCancel} onRetry={onRetry} onDelete={onDelete} />
           ))}
         </div>
       )}
@@ -667,7 +669,7 @@ export default function App() {
       {/* 详情抽屉 */}
       <DetailDrawer
         task={detailTask}
-        onClose={() => setDetailTask(null)}
+        onClose={() => setDetailId(null)}
         onRetry={onRetry}
         onOpen={onOpen}
         onReveal={onReveal}
