@@ -1,0 +1,284 @@
+// 服务端集成测试：真实起服务、真实调接口，下载用本地 HTTP 桩（不依赖外网）
+// 外网相关用例（代理连通性实测）默认跳过，RUN_NETWORK_TESTS=1 时启用
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+
+const RUN_NETWORK = process.env.RUN_NETWORK_TESTS === '1';
+
+// 隔离配置：必须在导入业务模块前设置（config.mjs 在导入时读取）
+const tmpRoot = mkdtempSync(path.join(tmpdir(), 'vd-test-'));
+process.env.VD_CONFIG_PATH = path.join(tmpRoot, 'config.json');
+writeFileSync(process.env.VD_CONFIG_PATH, JSON.stringify({ proxy: '' }));
+
+const { createApp } = await import('../src/server.mjs');
+
+// ---------- 测试基础设施 ----------
+const server = createApp();
+await new Promise((res) => server.listen(0, '127.0.0.1', res));
+const BASE = `http://127.0.0.1:${server.address().port}`;
+
+// 本地 HTTP 桩：提供一个"假视频"文件供 yt-dlp 下载
+// flaky.mp4 配合 flakyFail 开关：置 true 时返回 403（模拟瞬时失败），置 false 后恢复
+const stubBody = Buffer.from('FAKEVIDEOCONTENT-NOT-A-REAL-MP4-BUT-FINE-FOR-DOWNLOAD-TEST');
+let flakyFail = true;
+const stub = http.createServer((req, res) => {
+  if (req.url === '/fake.mp4') {
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(stubBody.length) });
+    res.end(stubBody);
+  } else if (req.url === '/flaky.mp4') {
+    if (flakyFail) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('forbidden (simulated transient failure)');
+    } else {
+      res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(stubBody.length) });
+      res.end(stubBody);
+    }
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
+await new Promise((res) => stub.listen(0, '127.0.0.1', res));
+const STUB_URL = `http://127.0.0.1:${stub.address().port}/fake.mp4`;
+const FLAKY_URL = `http://127.0.0.1:${stub.address().port}/flaky.mp4`;
+
+const j = (p, opts) => fetch(BASE + p, opts).then(async (r) => ({ status: r.status, body: await r.json() }));
+const post = (p, body) => j(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+
+test.after(() => {
+  // closeAllConnections 必须有：SSE 长连接不关会让 server.close() 永远等下去、进程挂住
+  server.close();
+  server.closeAllConnections?.();
+  stub.close();
+  stub.closeAllConnections?.();
+  rmSync(tmpRoot, { recursive: true, force: true });
+});
+
+// ---------- 页面 ----------
+test('GET / 返回 GUI 页面（React 构建产物）', async () => {
+  const html = await fetch(BASE + '/').then((r) => r.text());
+  assert.ok(html.includes('id="root"'), 'React 挂载点');
+  assert.ok(html.includes('/assets/'), 'Vite 资源引用');
+});
+
+// ---------- 解析 ----------
+test('POST /api/parse: 抖音口令 → 站点 douyin', async () => {
+  const { body } = await post('/api/parse', { input: '看看【xx】... https://v.douyin.com/ABC123/ 尾部噪声' });
+  assert.deepEqual(body.urls, [{ url: 'https://v.douyin.com/ABC123/', site: 'douyin' }]);
+});
+
+test('POST /api/parse: 混合多链接 + 未知站点', async () => {
+  const { body } = await post('/api/parse', { input: 'https://youtu.be/x https://vimeo.com/123456' });
+  assert.equal(body.urls.length, 2);
+  assert.equal(body.urls[0].site, 'youtube');
+  assert.equal(body.urls[1].site, 'generic');
+});
+
+test('POST /api/parse: 裸 URL 兜底', async () => {
+  const { body } = await post('/api/parse', { input: 'https://youtu.be/x' });
+  assert.equal(body.urls.length, 1);
+});
+
+test('POST /api/parse: B站链接（含 b23.tv 短链）', async () => {
+  const a = await post('/api/parse', { input: 'https://www.bilibili.com/video/BV1GJ411x7h7?p=2' });
+  assert.equal(a.body.urls[0].site, 'bilibili');
+  const b = await post('/api/parse', { input: '看看这个 https://b23.tv/abc123 分享' });
+  assert.equal(b.body.urls[0].site, 'bilibili');
+});
+
+// ---------- 配置 ----------
+test('GET/POST /api/config: 读取与保存（含校验）', async () => {
+  assert.equal((await j('/api/config')).body.proxy, '');
+  const bad = await post('/api/config', { proxy: 'ws://bad' });
+  assert.equal(bad.status, 400);
+  const ok = await post('/api/config', { proxy: 'socks5://127.0.0.1:1080' });
+  assert.equal(ok.body.proxy, 'socks5://127.0.0.1:1080');
+  assert.equal((await j('/api/config')).body.proxy, 'socks5://127.0.0.1:1080');
+  await post('/api/config', { proxy: '' }); // 复原
+});
+
+test('GET/POST /api/config: SESSDATA 校验与持久化', async () => {
+  // 非法值（含引号/前缀/中文）→ 400
+  assert.equal((await post('/api/config', { bilibiliSessdata: '"abc"' })).status, 400);
+  assert.equal((await post('/api/config', { bilibiliSessdata: 'Cookie: SESSDATA=x' })).status, 400);
+  // 合法值保存并可读回
+  const ok = await post('/api/config', { bilibiliSessdata: '12%2CabXYZ,_' });
+  assert.equal(ok.status, 200);
+  assert.equal((await j('/api/config')).body.bilibiliSessdata, '12%2CabXYZ,_');
+  // 清空
+  await post('/api/config', { bilibiliSessdata: '' });
+  assert.equal((await j('/api/config')).body.bilibiliSessdata, '');
+});
+
+// ---------- 代理测试 ----------
+test('POST /api/proxy-test: 非法地址 → 400', async () => {
+  assert.equal((await post('/api/proxy-test', { proxy: '垃圾' })).status, 400);
+});
+
+test('POST /api/proxy-test: 死端口 → ok:false（快速失败）', async () => {
+  const { body } = await post('/api/proxy-test', { proxy: 'http://127.0.0.1:9399' });
+  assert.equal(body.ok, false);
+});
+
+test('POST /api/proxy-test: 本地转发代理可达（RUN_NETWORK_TESTS=1）', { skip: !RUN_NETWORK }, async () => {
+  const { spawn } = await import('node:child_process');
+  const proxy = spawn(process.execPath, [path.resolve('scripts/dev-proxy.mjs'), '9390'], { stdio: 'ignore' });
+  try {
+    await new Promise((r) => setTimeout(r, 800));
+    const { body } = await post('/api/proxy-test', { proxy: 'http://127.0.0.1:9390' });
+    assert.equal(body.ok, true, body.message);
+  } finally {
+    proxy.kill();
+  }
+});
+
+test('B站真实下载（RUN_NETWORK_TESTS=1）：360p 游客模式全链路', { skip: !RUN_NETWORK, timeout: 120000 }, async () => {
+  const outDir = path.join(tmpRoot, 'bili-dl');
+  const { body } = await post('/api/download', {
+    input: 'https://www.bilibili.com/video/BV1GJ411x7h7',
+    quality: '360',
+    outDir,
+  });
+  const id = body.tasks[0].id;
+  const t = await waitTask(id, 90000);
+  assert.equal(t?.status, 'done', t?.error || '任务未完成');
+  assert.ok(t.file?.endsWith('.mp4'));
+});
+
+// ---------- 文件系统列表 ----------
+test('GET /api/fs/list: 根视图含主目录与盘符', async () => {
+  const { body } = await j('/api/fs/list');
+  assert.equal(body.path, null);
+  assert.ok(body.entries.some((e) => e.name === '主目录'));
+  assert.ok(body.entries.some((e) => /^[A-Z]:\\$/.test(e.name)), '至少一个盘符');
+});
+
+test('GET /api/fs/list: 只列目录、过滤系统目录、parent 正确', async () => {
+  const dir = path.join(tmpRoot, 'fs-case');
+  mkdirSync(dir, { recursive: true }); // 递归建父目录
+  mkdirSync(path.join(dir, '普通目录'));
+  mkdirSync(path.join(dir, 'z-last'));
+  mkdirSync(path.join(dir, '$Recycle.Bin'));
+  mkdirSync(path.join(dir, 'System Volume Information'));
+  writeFileSync(path.join(dir, 'a-file.txt'), 'x');
+
+  const { body } = await j('/api/fs/list?dir=' + encodeURIComponent(dir));
+  assert.deepEqual(body.entries.map((e) => e.name), ['z-last', '普通目录'].sort((a, b) => a.localeCompare(b, 'zh')));
+  assert.equal(body.parent, tmpRoot);
+});
+
+test('GET /api/fs/list: 不存在的目录 → err 字段', async () => {
+  const { body } = await j('/api/fs/list?dir=' + encodeURIComponent('C:\\definitely-not-exist-xyz'));
+  assert.ok(body.err);
+  assert.deepEqual(body.entries, []);
+});
+
+// ---------- 目录选择 ----------
+test('POST /api/pick-dir: web 模式返回 native:false', async () => {
+  const { body } = await post('/api/pick-dir');
+  assert.deepEqual(body, { native: false });
+});
+
+// ---------- 定位文件 ----------
+test('POST /api/reveal: 不存在的路径 → 404（不弹窗）', async () => {
+  assert.equal((await post('/api/reveal', { path: 'C:\\no-such.mp4' })).status, 404);
+});
+
+// ---------- 下载任务（真实 yt-dlp + 本地桩，SSE 全链路） ----------
+test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', { timeout: 60000 }, async () => {
+  const outDir = path.join(tmpRoot, 'downloads');
+  const events = [];
+  const seen = new Set();
+  const es = await fetch(BASE + '/api/events').then(async (res) => {
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          for (const line of dec.decode(value).split('\n')) {
+            if (line.startsWith('data: ')) {
+              const ev = JSON.parse(line.slice(6));
+              events.push(ev);
+              if (ev.type === 'task') seen.add(`${ev.task.status}`);
+            }
+          }
+        }
+      } catch {}
+    })();
+    return true;
+  });
+  assert.ok(es); // SSE 已连接
+
+  // 等待 init 快照到达
+  await new Promise((r) => setTimeout(r, 300));
+
+  const { status, body } = await post('/api/download', { input: STUB_URL, outDir });
+  assert.equal(status, 200);
+  assert.equal(body.tasks.length, 1);
+  // pump() 同步启动，响应返回时任务可能已是 running
+  assert.ok(['queued', 'running'].includes(body.tasks[0].status));
+
+  // 轮询任务完成
+  let task;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    const list = (await j('/api/tasks')).body.tasks;
+    task = list.find((t) => t.id === body.tasks[0].id);
+    if (task && (task.status === 'done' || task.status === 'error')) break;
+  }
+  assert.equal(task?.status, 'done', '任务应完成: ' + JSON.stringify(task?.error));
+  assert.ok(task.file?.endsWith('.mp4'));
+  assert.ok(task.percent === 100);
+  assert.ok(seen.has('done'), 'SSE 应推送 done 状态');
+  // 文件确实存在且内容一致
+  const { readFile } = await import('node:fs/promises');
+  const content = await readFile(task.file);
+  assert.equal(content.length, stubBody.length);
+});
+
+test('POST /api/download: 重复链接去重为一个任务', async () => {
+  const { body } = await post('/api/download', { input: `${STUB_URL} ${STUB_URL}` });
+  assert.equal(body.tasks.length, 1, '相同链接应去重');
+});
+
+// ---------- 失败任务重试 ----------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitTask(id, timeoutMs = 45000) {
+  for (let i = 0; i < timeoutMs / 500; i++) {
+    await sleep(500);
+    const t = (await j('/api/tasks')).body.tasks.find((x) => x.id === id);
+    if (t && (t.status === 'done' || t.status === 'error')) return t;
+  }
+  return null;
+}
+
+test('POST /api/retry: 失败任务复位重跑直至成功', { timeout: 120000 }, async () => {
+  flakyFail = true;
+  const outDir = path.join(tmpRoot, 'retry-dl');
+
+  // 第一次：桩持续 403 → 内部 3 次重试耗尽 → 任务失败
+  const { body } = await post('/api/download', { input: FLAKY_URL, outDir });
+  const id = body.tasks[0].id;
+  const failed = await waitTask(id);
+  assert.equal(failed?.status, 'error', '应失败');
+  assert.ok(failed.error, '应有错误信息');
+
+  // 不存在的任务 → 404
+  assert.equal((await post('/api/retry', { id: 'no-such' })).status, 404);
+
+  // 恢复桩 → 重试 → 成功，且状态复位正确
+  flakyFail = false;
+  const r = await post('/api/retry', { id });
+  assert.equal(r.status, 200);
+  assert.ok(['queued', 'running'].includes(r.body.task.status), '复位后应排队/立即开跑');
+  assert.equal(r.body.task.error, null);
+  const done = await waitTask(id);
+  assert.equal(done?.status, 'done', '重试后应成功');
+  assert.ok(done.file?.endsWith('.mp4'));
+});

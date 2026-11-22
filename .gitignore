@@ -1,0 +1,8 @@
+node_modules/
+bin/
+downloads/
+.tmp/
+config.json
+web/dist/
+release/
+.test*.log

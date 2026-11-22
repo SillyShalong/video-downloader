@@ -1,0 +1,147 @@
+/* 页面级自定义样式（组件样式交给 AntD，这里只做布局与任务卡） */
+:root { color-scheme: dark; }
+
+body {
+  background:
+    radial-gradient(900px 420px at 82% -8%, rgba(143, 123, 255, 0.09), transparent 60%),
+    radial-gradient(760px 380px at 6% -12%, rgba(91, 140, 255, 0.09), transparent 58%),
+    #0a0c11;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 880px; margin: 0 auto; padding: 28px 24px 72px; }
+
+/* 顶栏 */
+header { display: flex; align-items: center; gap: 13px; margin-bottom: 22px; }
+.logo {
+  width: 44px; height: 44px; border-radius: 12px; flex: none;
+  background: linear-gradient(145deg, #7aa7ff 0%, #6d9eff 45%, #8f7bff 100%);
+  box-shadow: 0 4px 16px rgba(109, 158, 255, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 19px;
+}
+header .ttl h1 { font-size: 17px; font-weight: 650; display: flex; align-items: center; gap: 8px; margin: 0; color: rgba(255, 255, 255, 0.92); }
+header .ttl .ver { font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }
+header .sub { color: rgba(255, 255, 255, 0.38); font-size: 12px; margin-top: 1px; letter-spacing: 0.3px; }
+.gear { margin-left: auto; }
+.gear.on { color: #6d9eff; border-color: rgba(109, 158, 255, 0.45); transform: rotate(45deg); }
+
+.tag-label { font-size: 11px !important; font-weight: 600; letter-spacing: 0.8px; }
+
+/* 设置面板折叠 */
+.settings {
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s cubic-bezier(0.25, 0.8, 0.35, 1), margin 0.3s, opacity 0.25s;
+  margin-bottom: 0; opacity: 0; overflow: hidden;
+}
+.settings.open { grid-template-rows: 1fr; margin-bottom: 16px; opacity: 1; }
+.settings > * { min-height: 0; }
+#proxy-status { font-size: 12px; min-height: 18px; font-weight: 550; }
+#proxy-status.ok { color: #4ade80; }
+#proxy-status.bad { color: #f87171; }
+.note { font-size: 11.5px !important; line-height: 1.6; }
+
+.detected { min-height: 24px; margin-top: 10px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.detected .count { color: rgba(255, 255, 255, 0.38); }
+.controls { margin-top: 16px; }
+.seg.disabled { opacity: 0.38; pointer-events: none; }
+
+/* 区块标题 */
+.section-head { display: flex; align-items: center; gap: 12px; margin: 26px 2px 13px; }
+.section-head h2 { font-size: 12px; font-weight: 650; color: rgba(255, 255, 255, 0.38); letter-spacing: 1px; margin: 0; }
+.section-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255, 255, 255, 0.11), transparent); }
+
+/* 任务卡 */
+.task {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 15px 17px; margin-bottom: 10px;
+  animation: taskIn 0.3s cubic-bezier(0.25, 0.8, 0.35, 1) both;
+}
+@keyframes taskIn { from { opacity: 0; transform: translateY(7px); } }
+
+.task .row1 { display: flex; align-items: center; gap: 12px; }
+.sticon {
+  width: 34px; height: 34px; border-radius: 10px; flex: none;
+  display: flex; align-items: center; justify-content: center; font-size: 14px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.4);
+}
+.sticon.running { background: rgba(109, 158, 255, 0.1); border-color: rgba(109, 158, 255, 0.3); color: #6d9eff; }
+.sticon.done { background: rgba(74, 222, 128, 0.09); border-color: rgba(74, 222, 128, 0.28); color: #4ade80; }
+.sticon.error { background: rgba(248, 113, 113, 0.09); border-color: rgba(248, 113, 113, 0.28); color: #f87171; }
+
+.task .main { flex: 1; min-width: 0; }
+.task .title {
+  font-size: 13.5px; font-weight: 600; color: rgba(255, 255, 255, 0.92);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task .meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11.5px; color: rgba(255, 255, 255, 0.38); }
+.chip {
+  font-size: 10px; font-weight: 650; padding: 1.5px 7px; border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.42); text-transform: uppercase; letter-spacing: 0.5px; line-height: 1.6;
+}
+.chip.q { color: #6d9eff; border-color: rgba(109, 158, 255, 0.25); background: rgba(109, 158, 255, 0.07); }
+.task .stage-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.task .bar { margin: 12px 0 9px; }
+
+.task .foot { display: flex; align-items: center; gap: 10px; }
+.task .pct { font-size: 12px; font-weight: 650; color: rgba(255, 255, 255, 0.55); min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
+.task.done .pct { color: #4ade80; }
+.task .file {
+  flex: 1; font-family: Consolas, monospace; font-size: 11px; color: rgba(255, 255, 255, 0.38);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task .actions { display: flex; gap: 6px; opacity: 0; transition: opacity 0.16s; }
+.task:hover .actions { opacity: 1; }
+.task.error .actions { opacity: 1; }
+.task .actions button[data-act="retry"] { color: #fbbf24 !important; }
+
+.err {
+  background: rgba(248, 113, 113, 0.06); border: 1px solid rgba(248, 113, 113, 0.2); border-radius: 10px;
+  padding: 10px 12px; font-size: 12px; color: #ffa39d; margin-top: 11px;
+  white-space: pre-wrap; word-break: break-all; font-family: Consolas, monospace; line-height: 1.6;
+}
+details.log { margin-top: 10px; }
+details.log summary {
+  cursor: pointer; color: rgba(255, 255, 255, 0.38); font-size: 12px; user-select: none;
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; margin-left: -10px; border-radius: 8px;
+}
+details.log summary:hover { color: rgba(255, 255, 255, 0.85); background: rgba(255, 255, 255, 0.04); }
+details.log pre {
+  background: rgba(0, 0, 0, 0.32); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 10px;
+  padding: 10px 12px; font-size: 11px; margin-top: 7px; color: rgba(255, 255, 255, 0.38);
+  white-space: pre-wrap; word-break: break-all; max-height: 190px; overflow-y: auto;
+  font-family: Consolas, monospace; line-height: 1.6;
+}
+
+.empty {
+  border: 1.5px dashed rgba(255, 255, 255, 0.09); border-radius: 14px;
+  padding: 26px 20px; background: rgba(255, 255, 255, 0.012);
+}
+
+footer { text-align: center; color: rgba(255, 255, 255, 0.32); font-size: 11.5px; margin-top: 30px; line-height: 1.9; }
+footer code {
+  background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 6px;
+  padding: 1px 8px; font-size: 10.5px; font-family: Consolas, monospace; color: rgba(255, 255, 255, 0.5);
+}
+
+/* 目录弹窗 */
+.dm-path {
+  flex: 1; font-family: Consolas, monospace; font-size: 11.5px; color: rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px;
+  padding: 6px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dm-list { max-height: 46vh; overflow-y: auto; border-top: 1px solid rgba(255, 255, 255, 0.07); padding-top: 6px; }
+.dm-item {
+  display: flex; align-items: center; gap: 9px; padding: 7.5px 10px;
+  border-radius: 9px; font-size: 13px; cursor: pointer; color: rgba(255, 255, 255, 0.85);
+  transition: background 0.12s;
+}
+.dm-item:hover { background: rgba(109, 158, 255, 0.09); }
+.dm-item .ico { flex: none; opacity: 0.85; font-size: 14px; }
+.dm-empty { padding: 26px; text-align: center; color: rgba(255, 255, 255, 0.38); font-size: 12.5px; }

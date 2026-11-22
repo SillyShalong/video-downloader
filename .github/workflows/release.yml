@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download binaries (yt-dlp / ffmpeg / deno)
+        run: npm run setup
+
+      - name: Build frontend
+        run: npm run build:web
+
+      - name: Run tests
+        run: npm run test:unit && npm run test:server
+        env:
+          CI: true
+
+      - name: Package (NSIS + Portable)
+        run: npx electron-builder --win --publish never
+        env:
+          # CI 环境跳过 winCodeSign 签名下载加速
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoDownloader-windows
+          path: release/*.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
