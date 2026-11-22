@@ -27,7 +27,7 @@ class Task(
     val quality: String? = null,
     val audio: Boolean = false,
     val log: MutableList<String> = mutableListOf(),
-    val createdAt: Long = System.currentTimeMillis(),
+    var createdAt: Long = System.currentTimeMillis(),
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("url", url); put("site", site); put("status", status)
