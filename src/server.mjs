@@ -7,7 +7,7 @@
 //   POST /api/open    用系统默认程序打开文件
 //   POST /api/reveal  在资源管理器中定位文件
 import http from 'node:http';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -80,11 +80,45 @@ export function createApp(opts = {}) {
   const queue = []; // 待执行的任务 id（顺序执行）
   const clients = new Set(); // 已连接的 SSE 响应对象
   let pumping = false;
+  let currentRun = null;
 
-  // 启动时回填历史（已完成任务的元数据：原始链接/目标路径等）
+  const ACTIVE_FILE = path.join(path.dirname(process.env.VD_HISTORY_PATH || path.join(__dirname, '..', 'history.json')), 'active-tasks.json');
+
+  // ---- 重启续传：读取上次未完成任务并重新入队（yt-dlp 从 .part 断点续传） ----
+  function restoreActiveTasks() {
+    try {
+      const raw = readFileSync(ACTIVE_FILE, 'utf8');
+      const arr = JSON.parse(raw);
+      for (const saved of arr) {
+        // 不与已有历史重复
+        if (tasks.has(saved.id)) continue;
+        const t = { ...saved, status: 'queued', stage: '恢复中…', percent: 0, speed: null, eta: null, log: ['↻ 检测到未完成任务，自动恢复（断点续传）'] };
+        tasks.set(t.id, t);
+        queue.push(t.id);
+      }
+      if (arr.length > 0) console.log(`恢复 ${arr.length} 个未完成任务`);
+    } catch {}
+  }
+
+  /** 保存当前 running/paused 任务到文件（退出前调用） */
+  function saveActiveTasks() {
+    try {
+      const active = [...tasks.values()]
+        .filter((t) => t.status === 'running' || t.status === 'paused' || t.status === 'queued')
+        .map((t) => ({ id: t.id, url: t.url, site: t.site, quality: t.quality, audio: t.audio, outDir: t.outDir, playlistItems: t.playlistItems, title: t.title, createdAt: t.createdAt }));
+      writeFileSync(ACTIVE_FILE, JSON.stringify(active, null, 2), 'utf8');
+    } catch {}
+  }
+
+  // 启动时回填历史（已完成任务的元数据）
   for (const r of loadHistory()) {
     tasks.set(r.id, { ...r, log: r.log || [], stage: '完成', percent: 100 });
   }
+
+  // 恢复上次未完成的任务
+  restoreActiveTasks();
+  // 恢复任务后启动下载队列（pump 函数声明提升，此处可调用）
+  setTimeout(() => pump(), 500);
 
   function emitTask(task, { throttle = false } = {}) {
     const now = Date.now();
@@ -119,7 +153,6 @@ export function createApp(opts = {}) {
     };
   }
 
-  let currentRun = null; // { id, abort: AbortController } —— 正在执行的任务（用于暂停/终止）
 
   async function pump() {
     if (pumping) return;
@@ -601,5 +634,6 @@ export function createApp(opts = {}) {
     }
   });
 
+  server.saveActiveTasks = saveActiveTasks;
   return server;
 }

@@ -36,5 +36,6 @@ export async function startServer(preferredPort = 8321, opts = {}, host = '127.0
     port,
     url: `http://127.0.0.1:${port}`,
     close: () => new Promise((resolve) => server.close(resolve)),
+    saveActiveTasks: () => server.saveActiveTasks?.(),
   };
 }
