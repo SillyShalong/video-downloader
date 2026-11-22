@@ -3,6 +3,7 @@ package com.sillyshalong.videodownloader
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.MediaStore
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONArray
 import org.json.JSONObject
@@ -151,7 +152,7 @@ class LocalServer private constructor(port: Int, private val ctx: Context) : Nan
                 uri == "/api/reveal" && session.method == Method.POST -> {
                     // 手机端：打开系统下载应用定位
                     ctx.startActivity(
-                        Intent(Intent.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                     )
                     json(JSONObject().put("ok", true))
                 }
