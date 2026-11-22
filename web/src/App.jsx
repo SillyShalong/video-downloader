@@ -72,35 +72,35 @@ const stText = (s) => t(STATUS_TEXT_KEY[s] || s);
 
 /* ---- 紧凑任务行（单行 + 进度条，点击开详情抽屉） ---- */
 const TaskRow = memo(
-  function TaskRow({ t, onDetail, onPause, onCancel, onRetry, onDelete }) {
-    const pct = t.percent > 0 ? Math.min(100, t.percent) : 0;
-    const pctText = t.status === 'done' ? '100%' : pct > 0 ? pct.toFixed(0) + '%' : '';
-    const qLabel = t.audio ? 'MP3' : t.quality ? t.quality + 'P' : '';
-    const isRunning = t.status === 'running';
-    const canDelete = !isRunning && t.status !== 'queued';
+  function TaskRow({ task, onDetail, onPause, onCancel, onRetry, onDelete }) {
+    const pct = task.percent > 0 ? Math.min(100, t.percent) : 0;
+    const pctText = task.status === 'done' ? '100%' : pct > 0 ? pct.toFixed(0) + '%' : '';
+    const qLabel = task.audio ? 'MP3' : task.quality ? task.quality + 'P' : '';
+    const isRunning = task.status === 'running';
+    const canDelete = !isRunning && task.status !== 'queued';
 
     return (
-      <div className={`trow ${t.status}`} onClick={() => onDetail(t)}>
-        <div className={`tsi ${t.status}`}>{STATUS_ICON[t.status] ?? null}</div>
-        <span className="t-title" title={t.title || t.url}>{t.title || midTrunc(t.url, 40, 20)}</span>
-        <span className="chip sm">{SITE_LABEL[t.site] || t.site}</span>
+      <div className={`trow ${task.status}`} onClick={() => onDetail(task)}>
+        <div className={`tsi ${task.status}`}>{STATUS_ICON[task.status] ?? null}</div>
+        <span className="t-title" title={task.title || task.url}>{task.title || midTrunc(task.url, 40, 20)}</span>
+        <span className="chip sm">{SITE_LABEL[task.site] || task.site}</span>
         {qLabel && <span className="chip sm q">{qLabel}</span>}
-        {isRunning && t.speed > 0 && <span className="t-speed">{fmtSpeed(t.speed)}</span>}
-        {t.sizeBytes > 0 && !isRunning && <span className="t-size">{fmtBytes(t.sizeBytes)}</span>}
-        {isRunning && t.downloaded > 0 && <span className="t-size">{fmtBytes(t.downloaded)}</span>}
+        {isRunning && task.speed > 0 && <span className="t-speed">{fmtSpeed(task.speed)}</span>}
+        {task.sizeBytes > 0 && !isRunning && <span className="t-size">{fmtBytes(task.sizeBytes)}</span>}
+        {isRunning && task.downloaded > 0 && <span className="t-size">{fmtBytes(task.downloaded)}</span>}
         {pctText && <span className="t-pct">{pctText}</span>}
         <div className="t-actions" onClick={(e) => e.stopPropagation()}>
           {isRunning && (
             <>
-              <Button size="small" type="text" data-act="pause" onClick={() => onPause(t.id)}><PauseCircleOutlined /></Button>
-              <Button size="small" type="text" data-act="cancel" onClick={() => onCancel(t.id)}><StopOutlined /></Button>
+              <Button size="small" type="text" data-act="pause" onClick={() => onPause(task.id)}><PauseCircleOutlined /></Button>
+              <Button size="small" type="text" data-act="cancel" onClick={() => onCancel(task.id)}><StopOutlined /></Button>
             </>
           )}
-          {(t.status === 'error' || t.status === 'paused' || t.status === 'cancelled') && (
-            <Button size="small" type="text" data-act="retry" onClick={() => onRetry(t.id)}><ReloadOutlined /></Button>
+          {(task.status === 'error' || task.status === 'paused' || task.status === 'cancelled') && (
+            <Button size="small" type="text" data-act="retry" onClick={() => onRetry(task.id)}><ReloadOutlined /></Button>
           )}
           {canDelete && (
-            <Popconfirm title="删除此历史记录？" onConfirm={() => onDelete(t.id)} okText="删除" cancelText="取消">
+            <Popconfirm title="删除此历史记录？" onConfirm={() => onDelete(task.id)} okText="删除" cancelText="取消">
               <Button size="small" type="text" danger><DeleteOutlined /></Button>
             </Popconfirm>
           )}
@@ -114,7 +114,7 @@ const TaskRow = memo(
     );
   },
   (a, b) => {
-    const x = a.t, y = b.t;
+    const x = a.task, y = b.task;
     return x === y || (x.id === y.id && x.status === y.status && x.percent === y.percent &&
       x.title === y.title && x.file === y.file && x.error === y.error &&
       x.speed === y.speed && x.downloaded === y.downloaded && x.sizeBytes === y.sizeBytes);
@@ -122,74 +122,74 @@ const TaskRow = memo(
 );
 
 /* ---- 详情抽屉 ---- */
-function DetailDrawer({ t, onClose, onRetry, onOpen, onReveal, onDelete }) {
-  if (!t) return null;
-  const pct = t.percent > 0 ? Math.min(100, t.percent) : 0;
-  const qLabel = t.audio ? 'MP3' : t.quality ? t.quality + 'P' : '最佳';
+function DetailDrawer({ task, onClose, onRetry, onOpen, onReveal, onDelete }) {
+  if (!task) return null;
+  const pct = task.percent > 0 ? Math.min(100, task.percent) : 0;
+  const qLabel = task.audio ? 'MP3' : task.quality ? task.quality + 'P' : '最佳';
   return (
-    <Drawer title={t.title || t.url} open={!!t} onClose={onClose} width={420}>
+    <Drawer title={task.title || task.url} open={!!task} onClose={onClose} width={420}>
       <Flex vertical gap={12}>
         <Flex gap={8} align="center">
-          <span className={`tsi ${t.status}`}>{STATUS_ICON[t.status]}</span>
-          <Tag color={t.status === 'done' ? 'success' : t.status === 'error' ? 'error' : t.status === 'running' ? 'processing' : 'default'}>
-            {stText(t.status)}
+          <span className={`tsi ${task.status}`}>{STATUS_ICON[task.status]}</span>
+          <Tag color={task.status === 'done' ? 'success' : task.status === 'error' ? 'error' : task.status === 'running' ? 'processing' : 'default'}>
+            {stText(task.status)}
           </Tag>
-          <span className="chip">{SITE_LABEL[t.site] || t.site}</span>
+          <span className="chip">{SITE_LABEL[task.site] || task.site}</span>
           <span className="chip q">{qLabel}</span>
-          {t.sizeBytes > 0 && <Text type="secondary">{fmtBytes(t.sizeBytes)}</Text>}
+          {task.sizeBytes > 0 && <Text type="secondary">{fmtBytes(task.sizeBytes)}</Text>}
         </Flex>
 
-        {t.status === 'running' && (
+        {task.status === 'running' && (
           <div>
             <Progress percent={pct} size={['100%', 6]} />
             <Flex justify="space-between" style={{ marginTop: 4 }}>
-              {t.speed > 0 && <Text type="secondary">{fmtSpeed(t.speed)}</Text>}
-              {t.eta >= 0 && <Text type="secondary">剩余 {fmtEta(t.eta)}</Text>}
+              {task.speed > 0 && <Text type="secondary">{fmtSpeed(task.speed)}</Text>}
+              {task.eta >= 0 && <Text type="secondary">剩余 {fmtEta(task.eta)}</Text>}
             </Flex>
           </div>
         )}
 
         <div>
           <Text type="secondary" className="tag-label">{t('originalUrl')}</Text>
-          <Typography.Paragraph copyable ellipsis style={{ margin: 0 }}>{t.url}</Typography.Paragraph>
+          <Typography.Paragraph copyable ellipsis style={{ margin: 0 }}>{task.url}</Typography.Paragraph>
         </div>
 
-        {t.file && (
+        {task.file && (
           <div>
             <Text type="secondary" className="tag-label">{t('fileLocation')}</Text>
-            <Typography.Paragraph copyable ellipsis style={{ margin: 0 }}>{t.file}</Typography.Paragraph>
+            <Typography.Paragraph copyable ellipsis style={{ margin: 0 }}>{task.file}</Typography.Paragraph>
           </div>
         )}
 
         <div>
           <Text type="secondary" className="tag-label">{t('timestamp')}</Text>
-          <Text>{new Date(t.createdAt).toLocaleString('zh-CN')}</Text>
+          <Text>{new Date(task.createdAt).toLocaleString('zh-CN')}</Text>
         </div>
 
-        {t.error && (
+        {task.error && (
           <div>
             <Text type="secondary" className="tag-label">{t('errorLabel')}</Text>
-            <div className="err">{t.error}</div>
+            <div className="err">{task.error}</div>
           </div>
         )}
 
-        {t.log?.length > 0 && (
+        {task.log?.length > 0 && (
           <details className="log">
-            <summary>日志 ({t.log.length})</summary>
-            <pre>{t.log.join('\n')}</pre>
+            <summary>日志 ({task.log.length})</summary>
+            <pre>{task.log.join('\n')}</pre>
           </details>
         )}
 
         <Flex gap={8} wrap="wrap" style={{ marginTop: 8 }}>
-          {(t.status === 'error' || t.status === 'paused' || t.status === 'cancelled') && (
-            <Button icon={<ReloadOutlined />} onClick={() => onRetry(t.id)}>
-              {t.status === 'error' ? '重试' : '恢复'}
+          {(task.status === 'error' || task.status === 'paused' || task.status === 'cancelled') && (
+            <Button icon={<ReloadOutlined />} onClick={() => onRetry(task.id)}>
+              {task.status === 'error' ? '重试' : '恢复'}
             </Button>
           )}
-          {t.file && <Button icon={<PlaySquareOutlined />} onClick={() => onOpen(t.file)}>{t('openFile')}</Button>}
-          {t.file && <Button icon={<FolderOpenOutlined />} onClick={() => onReveal(t.file)}>{t('openFolder')}</Button>}
-          {t.status !== 'running' && t.status !== 'queued' && (
-            <Popconfirm title="删除此历史记录？" onConfirm={() => { onDelete(t.id); onClose(); }} okText="删除" cancelText="取消">
+          {task.file && <Button icon={<PlaySquareOutlined />} onClick={() => onOpen(task.file)}>{t('openFile')}</Button>}
+          {task.file && <Button icon={<FolderOpenOutlined />} onClick={() => onReveal(task.file)}>{t('openFolder')}</Button>}
+          {task.status !== 'running' && task.status !== 'queued' && (
+            <Popconfirm title="删除此历史记录？" onConfirm={() => { onDelete(task.id); onClose(); }} okText="删除" cancelText="取消">
               <Button danger icon={<DeleteOutlined />}>删除</Button>
             </Popconfirm>
           )}
@@ -659,14 +659,14 @@ export default function App() {
       ) : (
         <div className="tlist">
           {taskList.map((t) => (
-            <TaskRow key={t.id} t={t} onDetail={setDetailTask} onPause={onPause} onCancel={onCancel} onRetry={onRetry} onDelete={onDelete} />
+            <TaskRow key={t.id} task={t} onDetail={setDetailTask} onPause={onPause} onCancel={onCancel} onRetry={onRetry} onDelete={onDelete} />
           ))}
         </div>
       )}
 
       {/* 详情抽屉 */}
       <DetailDrawer
-        t={detailTask}
+        task={detailTask}
         onClose={() => setDetailTask(null)}
         onRetry={onRetry}
         onOpen={onOpen}
