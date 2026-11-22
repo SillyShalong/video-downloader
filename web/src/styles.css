@@ -102,6 +102,53 @@ header .sub { color: rgba(255, 255, 255, 0.38); font-size: 12px; margin-top: 1px
 .task.done .pct { color: #4ade80; }
 /* 下载中的暂停/终止按钮常显 */
 .task.running .actions { opacity: 1; }
+
+/* ---- 紧凑任务列表（单行 + 行内进度条，点击开详情抽屉） ---- */
+.tlist { display: flex; flex-direction: column; gap: 2px; }
+.trow {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 8px;
+  cursor: pointer; position: relative;
+  transition: background 0.12s;
+  border: 1px solid transparent;
+  flex-wrap: wrap;
+}
+.trow:hover { background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.06); }
+.trow.running { background: rgba(109, 158, 255, 0.04); }
+
+.tsi {
+  width: 22px; height: 22px; border-radius: 6px; flex: none;
+  display: flex; align-items: center; justify-content: center; font-size: 12px;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.4);
+}
+.tsi.running { color: #6d9eff; background: rgba(109, 158, 255, 0.08); border-color: rgba(109, 158, 255, 0.2); }
+.tsi.done { color: #4ade80; background: rgba(74, 222, 128, 0.08); border-color: rgba(74, 222, 128, 0.2); }
+.tsi.error { color: #f87171; background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.2); }
+.tsi.paused { color: #fbbf24; }
+.tsi.cancelled { color: rgba(255, 255, 255, 0.3); }
+
+.t-title {
+  flex: 1; min-width: 0; font-size: 13px; font-weight: 550; color: rgba(255, 255, 255, 0.88);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chip.sm { font-size: 9.5px; padding: 1px 6px; letter-spacing: 0.3px; flex: none; }
+.t-speed { font-size: 11px; font-weight: 600; color: #6d9eff; white-space: nowrap; flex: none; }
+.t-size { font-size: 11px; color: rgba(255, 255, 255, 0.35); white-space: nowrap; flex: none; }
+.t-pct { font-size: 11.5px; font-weight: 650; color: rgba(255, 255, 255, 0.55); min-width: 36px; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
+
+.t-actions {
+  display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; flex: none;
+}
+.trow:hover .t-actions, .trow.running .t-actions, .trow.error .t-actions { opacity: 1; }
+.t-actions button { padding: 2px 6px !important; }
+
+.t-bar {
+  width: 100%; height: 3px; position: absolute; bottom: 0; left: 0; right: 0;
+  border-radius: 0 0 8px 8px; overflow: hidden;
+}
+.t-bar .ant-progress-line { margin: 0; line-height: 0; }
+.t-bar .ant-progress-bg { height: 3px !important; }
 .task .file {
   flex: 1; font-family: Consolas, monospace; font-size: 11px; color: rgba(255, 255, 255, 0.38);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

@@ -4,11 +4,13 @@ import {
   Button,
   Card,
   Checkbox,
+  Drawer,
   Empty,
   Flex,
   Input,
   List,
   Modal,
+  Popconfirm,
   Progress,
   Segmented,
   Switch,
@@ -22,6 +24,7 @@ import {
   ClockCircleOutlined,
   CloseOutlined,
   CopyOutlined,
+  DeleteOutlined,
   DownloadOutlined,
   FolderOpenOutlined,
   HomeOutlined,
@@ -63,113 +66,136 @@ const STATUS_ICON = {
   cancelled: <StopOutlined />,
 };
 
-const TaskCard = memo(
-  function TaskCard({ t, onRetry, onPause, onCancel, onOpen, onReveal }) {
-  const pct = t.percent > 0 ? Math.min(100, t.percent) : 0;
-  const pctText = t.status === 'done' ? '100%' : pct > 0 ? pct.toFixed(1) + '%' : '—';
-  const qLabel = t.audio ? 'MP3' : t.quality ? t.quality + 'P' : '最佳';
-  const fileName = t.file ? midTrunc(t.file.split(/[\\/]/).pop()) : '';
-  const stage = t.status === 'running' ? t.stage || '' : t.status === 'queued' ? '排队中' : '';
+const STATUS_TEXT = { queued: '排队', running: '下载', done: '完成', error: '失败', paused: '暂停', cancelled: '终止' };
 
-  return (
-    <div className={`task ${t.status}`}>
-      <div className="row1">
-        <div className={`sticon ${t.status}`}>{STATUS_ICON[t.status] ?? null}</div>
-        <div className="main">
-          <div className="title" title={t.title || t.url}>{t.title || t.url}</div>
-          <div className="meta">
-            <span className="chip">{SITE_LABEL[t.site] || t.site}</span>
-            <span className="chip q">{qLabel}</span>
-            <span className="stage-text">{stage}</span>
-          </div>
-        </div>
-      </div>
-      {t.status === 'running' && pct === 0 ? (
-        <Progress className="bar" percent={100} status="active" showInfo={false} size={['100%', 6]} />
-      ) : (
-        <Progress className="bar" percent={pct} showInfo={false} size={['100%', 6]} />
-      )}
-      <div className="foot">
-        <span className="file" title={t.file || ''}>{fileName}</span>
-        {t.status === 'running' && t.speed > 0 && (
-          <span className="speed">{fmtSpeed(t.speed)}{t.eta >= 0 ? ` · 剩余 ${fmtEta(t.eta)}` : ''}</span>
-        )}
-        {t.status === 'running' && t.downloaded > 0 && (
-          <span className="size">{fmtBytes(t.downloaded)}{t.totalBytes ? ` / ${fmtBytes(t.totalBytes)}` : ''}</span>
-        )}
-        <span className="pct">{pctText}</span>
-        <div className="actions">
-          {t.status === 'running' && (
+/* ---- 紧凑任务行（单行 + 进度条，点击开详情抽屉） ---- */
+const TaskRow = memo(
+  function TaskRow({ t, onDetail, onPause, onCancel, onRetry, onDelete }) {
+    const pct = t.percent > 0 ? Math.min(100, t.percent) : 0;
+    const pctText = t.status === 'done' ? '100%' : pct > 0 ? pct.toFixed(0) + '%' : '';
+    const qLabel = t.audio ? 'MP3' : t.quality ? t.quality + 'P' : '';
+    const isRunning = t.status === 'running';
+    const canDelete = !isRunning && t.status !== 'queued';
+
+    return (
+      <div className={`trow ${t.status}`} onClick={() => onDetail(t)}>
+        <div className={`tsi ${t.status}`}>{STATUS_ICON[t.status] ?? null}</div>
+        <span className="t-title" title={t.title || t.url}>{t.title || midTrunc(t.url, 40, 20)}</span>
+        <span className="chip sm">{SITE_LABEL[t.site] || t.site}</span>
+        {qLabel && <span className="chip sm q">{qLabel}</span>}
+        {isRunning && t.speed > 0 && <span className="t-speed">{fmtSpeed(t.speed)}</span>}
+        {t.sizeBytes > 0 && !isRunning && <span className="t-size">{fmtBytes(t.sizeBytes)}</span>}
+        {isRunning && t.downloaded > 0 && <span className="t-size">{fmtBytes(t.downloaded)}</span>}
+        {pctText && <span className="t-pct">{pctText}</span>}
+        <div className="t-actions" onClick={(e) => e.stopPropagation()}>
+          {isRunning && (
             <>
-              <Button size="small" type="text" data-act="pause" onClick={() => onPause(t.id)}>
-                <PauseCircleOutlined /> 暂停
-              </Button>
-              <Button size="small" type="text" data-act="cancel" onClick={() => onCancel(t.id)}>
-                <StopOutlined /> 终止
-              </Button>
+              <Button size="small" type="text" data-act="pause" onClick={() => onPause(t.id)}><PauseCircleOutlined /></Button>
+              <Button size="small" type="text" data-act="cancel" onClick={() => onCancel(t.id)}><StopOutlined /></Button>
             </>
           )}
-          {(t.status === 'paused' || t.status === 'cancelled') && (
-            <Button size="small" type="text" data-act="retry" onClick={() => onRetry(t.id)}>
-              <ReloadOutlined /> 恢复
-            </Button>
+          {(t.status === 'error' || t.status === 'paused' || t.status === 'cancelled') && (
+            <Button size="small" type="text" data-act="retry" onClick={() => onRetry(t.id)}><ReloadOutlined /></Button>
           )}
-          {t.status === 'error' && (
-            <Button size="small" type="text" data-act="retry" onClick={() => onRetry(t.id)}>
-              <ReloadOutlined /> 重试
-            </Button>
-          )}
-          {t.file && (
-            <Button size="small" type="text" data-act="open" onClick={() => onOpen(t.file)}>
-              <PlaySquareOutlined /> 打开文件
-            </Button>
-          )}
-          {t.file && (
-            <Button size="small" type="text" onClick={() => onReveal(t.file)}>
-              打开文件夹
-            </Button>
-          )}
-          {t.file && (
-            <Button size="small" type="text" onClick={() => navigator.clipboard.writeText(t.file)}>
-              复制路径
-            </Button>
+          {canDelete && (
+            <Popconfirm title="删除此历史记录？" onConfirm={() => onDelete(t.id)} okText="删除" cancelText="取消">
+              <Button size="small" type="text" danger><DeleteOutlined /></Button>
+            </Popconfirm>
           )}
         </div>
+        {isRunning && (
+          <div className="t-bar">
+            <Progress percent={pct > 0 ? pct : 100} status={pct > 0 ? 'normal' : 'active'} showInfo={false} size={['100%', 3]} />
+          </div>
+        )}
       </div>
-      {t.error && <div className="err">{t.error}</div>}
-      {t.log?.length > 0 && (
-        <details className="log">
-          <summary>▸ 日志 ({t.log.length})</summary>
-          <pre>{t.log.join('\n')}</pre>
-        </details>
-      )}
-    </div>
-  );
-  },
-  // 值比较器：SSE 每次推送都是新对象，默认引用比较会让全部卡片白渲染；
-  // 按字段比较后，A 任务下载时 B/C 任务卡完全不重渲染（悬停态/日志展开零打扰）
-  (a, b) => {
-    const x = a.t;
-    const y = b.t;
-    return (
-      x === y ||
-      (x.id === y.id &&
-        x.status === y.status &&
-        x.percent === y.percent &&
-        x.stage === y.stage &&
-        x.title === y.title &&
-        x.file === y.file &&
-        x.error === y.error &&
-        x.speed === y.speed &&
-        x.eta === y.eta &&
-        x.downloaded === y.downloaded &&
-        x.totalBytes === y.totalBytes &&
-        x.log?.length === y.log?.length &&
-        x.quality === y.quality &&
-        x.audio === y.audio)
     );
   },
+  (a, b) => {
+    const x = a.t, y = b.t;
+    return x === y || (x.id === y.id && x.status === y.status && x.percent === y.percent &&
+      x.title === y.title && x.file === y.file && x.error === y.error &&
+      x.speed === y.speed && x.downloaded === y.downloaded && x.sizeBytes === y.sizeBytes);
+  },
 );
+
+/* ---- 详情抽屉 ---- */
+function DetailDrawer({ t, onClose, onRetry, onOpen, onReveal, onDelete }) {
+  if (!t) return null;
+  const pct = t.percent > 0 ? Math.min(100, t.percent) : 0;
+  const qLabel = t.audio ? 'MP3' : t.quality ? t.quality + 'P' : '最佳';
+  return (
+    <Drawer title={t.title || t.url} open={!!t} onClose={onClose} width={420}>
+      <Flex vertical gap={12}>
+        <Flex gap={8} align="center">
+          <span className={`tsi ${t.status}`}>{STATUS_ICON[t.status]}</span>
+          <Tag color={t.status === 'done' ? 'success' : t.status === 'error' ? 'error' : t.status === 'running' ? 'processing' : 'default'}>
+            {STATUS_TEXT[t.status] || t.status}
+          </Tag>
+          <span className="chip">{SITE_LABEL[t.site] || t.site}</span>
+          <span className="chip q">{qLabel}</span>
+          {t.sizeBytes > 0 && <Text type="secondary">{fmtBytes(t.sizeBytes)}</Text>}
+        </Flex>
+
+        {t.status === 'running' && (
+          <div>
+            <Progress percent={pct} size={['100%', 6]} />
+            <Flex justify="space-between" style={{ marginTop: 4 }}>
+              {t.speed > 0 && <Text type="secondary">{fmtSpeed(t.speed)}</Text>}
+              {t.eta >= 0 && <Text type="secondary">剩余 {fmtEta(t.eta)}</Text>}
+            </Flex>
+          </div>
+        )}
+
+        <div>
+          <Text type="secondary" className="tag-label">原始链接</Text>
+          <Typography.Paragraph copyable ellipsis style={{ margin: 0 }}>{t.url}</Typography.Paragraph>
+        </div>
+
+        {t.file && (
+          <div>
+            <Text type="secondary" className="tag-label">文件位置</Text>
+            <Typography.Paragraph copyable ellipsis style={{ margin: 0 }}>{t.file}</Typography.Paragraph>
+          </div>
+        )}
+
+        <div>
+          <Text type="secondary" className="tag-label">时间</Text>
+          <Text>{new Date(t.createdAt).toLocaleString('zh-CN')}</Text>
+        </div>
+
+        {t.error && (
+          <div>
+            <Text type="secondary" className="tag-label">错误</Text>
+            <div className="err">{t.error}</div>
+          </div>
+        )}
+
+        {t.log?.length > 0 && (
+          <details className="log">
+            <summary>日志 ({t.log.length})</summary>
+            <pre>{t.log.join('\n')}</pre>
+          </details>
+        )}
+
+        <Flex gap={8} wrap="wrap" style={{ marginTop: 8 }}>
+          {(t.status === 'error' || t.status === 'paused' || t.status === 'cancelled') && (
+            <Button icon={<ReloadOutlined />} onClick={() => onRetry(t.id)}>
+              {t.status === 'error' ? '重试' : '恢复'}
+            </Button>
+          )}
+          {t.file && <Button icon={<PlaySquareOutlined />} onClick={() => onOpen(t.file)}>打开文件</Button>}
+          {t.file && <Button icon={<FolderOpenOutlined />} onClick={() => onReveal(t.file)}>打开文件夹</Button>}
+          {t.status !== 'running' && t.status !== 'queued' && (
+            <Popconfirm title="删除此历史记录？" onConfirm={() => { onDelete(t.id); onClose(); }} okText="删除" cancelText="取消">
+              <Button danger icon={<DeleteOutlined />}>删除</Button>
+            </Popconfirm>
+          )}
+        </Flex>
+      </Flex>
+    </Drawer>
+  );
+}
 
 /* ---------------- 应用 ---------------- */
 export default function App() {
@@ -193,6 +219,7 @@ export default function App() {
   const [connError, setConnError] = useState(null); // 远程模式连接失败提示
   const [selection, setSelection] = useState(null); // 多视频源选择 {entries, checked, input, outDir}
   const [submitting, setSubmitting] = useState(false);
+  const [detailTask, setDetailTask] = useState(null); // 详情抽屉当前任务
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
 
@@ -235,11 +262,14 @@ export default function App() {
     es.onmessage = (ev) => {
       const data = JSON.parse(ev.data);
       if (data.type === 'init') {
-        // init 是连接快照：仅当本地为空时应用，避免断线重连时清空重建列表（闪烁/节点重建）
         setTasks((prev) => (prev.size === 0 ? new Map(data.tasks.map((t) => [t.id, t])) : prev));
       } else if (data.type === 'task') {
         setTasks((prev) => new Map(prev).set(data.task.id, data.task));
         if (data.task.status === 'done') refreshStats();
+      } else if (data.type === 'delete') {
+        setTasks((prev) => { const m = new Map(prev); m.delete(data.id); return m; });
+        setDetailTask((d) => (d?.id === data.id ? null : d));
+        refreshStats();
       }
     };
     return () => es.close();
@@ -340,6 +370,11 @@ export default function App() {
   const onReveal = useCallback(async (p) => {
     const r = await api.reveal(p).catch(() => null);
     if (r?.error) message.error(r.error);
+  }, []);
+  const onDelete = useCallback(async (id) => {
+    const r = await api.deleteHistory(id).catch(() => null);
+    if (r?.error) message.error(r.error);
+    else message.success('已删除');
   }, []);
 
   /* ---- 浏览目录 ---- */
@@ -612,10 +647,22 @@ export default function App() {
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<>还没有任务 —— 粘贴链接，按 <Text keyboard>Ctrl</Text>+<Text keyboard>Enter</Text> 快速开始</>} />
         </div>
       ) : (
-        taskList.map((t) => (
-          <TaskCard key={t.id} t={t} onRetry={onRetry} onPause={onPause} onCancel={onCancel} onOpen={onOpen} onReveal={onReveal} />
-        ))
+        <div className="tlist">
+          {taskList.map((t) => (
+            <TaskRow key={t.id} t={t} onDetail={setDetailTask} onPause={onPause} onCancel={onCancel} onRetry={onRetry} onDelete={onDelete} />
+          ))}
+        </div>
       )}
+
+      {/* 详情抽屉 */}
+      <DetailDrawer
+        t={detailTask}
+        onClose={() => setDetailTask(null)}
+        onRetry={onRetry}
+        onOpen={onOpen}
+        onReveal={onReveal}
+        onDelete={onDelete}
+      />
 
       <footer>
         CLI 方式同样可用：<code>node cli.mjs &lt;链接/口令&gt; [-q 1080] [--audio] [-o 目录]</code>

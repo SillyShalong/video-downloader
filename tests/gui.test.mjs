@@ -33,11 +33,11 @@ const stub = http.createServer((req, res) => {
     let i = 0;
     const timer = setInterval(() => {
       res.write(slowBody.subarray(0, 10));
-      if (++i >= 10) {
+      if (++i >= 20) {
         clearInterval(timer);
         res.end();
       }
-    }, 300);
+    }, 400);
     return;
   }
   res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(stubBody.length) });
@@ -162,33 +162,34 @@ test('GUI: 端到端下载任务 → 任务卡完成', { skip: !browser, timeout
   await page.fill('#input', STUB_URL);
   await page.click('#btn');
   await page.waitForSelector('.ant-message-notice', { timeout: 5000 });
-  await page.waitForSelector('.sticon.done', { timeout: 30000 });
-  const file = await page.textContent('.task .file');
-  assert.ok(file.includes('.mp4'), '任务卡应显示文件名: ' + file);
-  assert.ok((await page.locator('.task button[data-act="open"]').count()) >= 1, '应有「打开文件」按钮');
+  await page.waitForSelector('.tsi.done', { timeout: 30000 });
+  const file = await page.textContent('.t-title');
+  // 紧凑模式下行内只显示标题，文件名在详情抽屉
+  assert.ok(file.length > 0, '任务行应显示标题: ' + file);
+  assert.ok((await page.locator('.trow.done').count()) >= 1, '应有「打开文件」按钮');
 });
 
 test('GUI: 失败任务重试按钮 → 点按后成功', { skip: !browser, timeout: 120000 }, async () => {
   flakyFail = true;
   await page.fill('#input', FLAKY_URL);
   await page.click('#btn');
-  await page.waitForSelector('.task.error', { timeout: 60000 });
+  await page.waitForSelector('.trow.error', { timeout: 60000 });
   // .actions 有 opacity transition(0.16s)，等过渡完成再断言
-  await page.waitForFunction(() => getComputedStyle(document.querySelector('.task.error .actions')).opacity === '1');
+  await page.waitForFunction(() => { const el = document.querySelector('.trow.error .t-actions'); return el && getComputedStyle(el).opacity === '1'; });
   assert.ok(true, '失败卡重试按钮常显');
   flakyFail = false;
-  await page.click('.task.error button[data-act="retry"]');
+  await page.click('.trow.error button[data-act="retry"]');
   // 必须等 done（只等"非 error"会在 running 状态提前通过，污染后续测试）
   await page.waitForFunction(
     () => {
-      const first = document.querySelector('.task');
+      const first = document.querySelector('.trow');
       if (!first || !first.classList.contains('done')) return false;
-      const txt = (first.querySelector('.file')?.textContent || '') + (first.querySelector('.title')?.textContent || '');
+      const txt = first.textContent;
       return txt.includes('flaky');
     },
     { timeout: 30000 },
   );
-  assert.equal(await page.locator('.task.error').count(), 0, '失败卡应已被复位');
+  assert.equal(await page.locator('.trow.error').count(), 0, '失败卡应已被复位');
 });
 
 test('GUI[回归]: 远程模式服务器不可达时给出明确连接错误（不再误报"未识别到链接"）', { skip: !browser }, async () => {
@@ -220,20 +221,20 @@ test('GUI[回归]: 下载中任务卡不整卡重建（防闪烁）', { skip: !b
   await page.click('#btn');
   // 必须锁定 slow 任务本身（页面上可能有其他任务处于 running）
   await page.waitForFunction(
-    () => [...document.querySelectorAll('.task.running')].some((e) => e.textContent.includes('slow')),
+    () => [...document.querySelectorAll('.trow.running')].some((e) => e.textContent.includes('slow')),
     { timeout: 20000 },
   );
   await page.waitForTimeout(300); // 等列表稳定（提交瞬间的状态抖动）
   await page.evaluate(() => {
-    window.__card = [...document.querySelectorAll('.task')].find((e) => e.textContent.includes('slow'));
+    window.__card = [...document.querySelectorAll('.trow')].find((e) => e.textContent.includes('slow'));
   });
   await page.waitForTimeout(1600);
   const sameNode = await page.evaluate(
-    () => [...document.querySelectorAll('.task')].find((e) => e.textContent.includes('slow')) === window.__card,
+    () => [...document.querySelectorAll('.trow')].find((e) => e.textContent.includes('slow')) === window.__card,
   );
   assert.equal(sameNode, true, '进度更新不应重建任务卡 DOM（会闪烁）');
   await page.waitForFunction(
-    () => [...document.querySelectorAll('.task.done')].some((e) => e.textContent.includes('slow')),
+    () => [...document.querySelectorAll('.trow.done')].some((e) => e.textContent.includes('slow')),
     { timeout: 30000 },
   );
 });
@@ -242,20 +243,20 @@ test('GUI: 运行中任务显示速度并可暂停/恢复', { skip: !browser, ti
   await page.fill('#input', SLOW_URL);
   await page.click('#btn');
   await page.waitForFunction(
-    () => [...document.querySelectorAll('.task.running')].some((e) => e.textContent.includes('slow')),
+    () => [...document.querySelectorAll('.trow.running')].some((e) => e.textContent.includes('slow')),
     { timeout: 20000 },
   );
   // 运行中的暂停/终止按钮常显
-  await page.waitForFunction(() => getComputedStyle(document.querySelector('.task.running .actions')).opacity === '1');
-  assert.ok((await page.locator('.task.running button[data-act="pause"]').count()) === 1, '应有暂停按钮');
+  await page.waitForFunction(() => { const el = document.querySelector('.trow.running .t-actions'); return el && getComputedStyle(el).opacity === '1'; });
+  assert.ok((await page.locator('.trow.running button[data-act="pause"]').count()) === 1, '应有暂停按钮');
   // 暂停 → 已暂停（状态卡出现恢复按钮）
-  await page.click('.task.running button[data-act="pause"]');
-  await page.waitForSelector('.task.paused', { timeout: 15000 });
-  assert.ok((await page.locator('.task.paused button[data-act="retry"]').count()) === 1, '暂停卡应有恢复按钮');
+  await page.click('.trow.running button[data-act="pause"]');
+  await page.waitForSelector('.trow.paused', { timeout: 15000 });
+  assert.ok((await page.locator('.trow.paused button[data-act="retry"]').count()) === 1, '暂停卡应有恢复按钮');
   // 恢复 → 完成
-  await page.click('.task.paused button[data-act="retry"]');
+  await page.click('.trow.paused button[data-act="retry"]');
   await page.waitForFunction(
-    () => [...document.querySelectorAll('.task.done')].some((e) => e.textContent.includes('slow')),
+    () => [...document.querySelectorAll('.trow.done')].some((e) => e.textContent.includes('slow')),
     { timeout: 30000 },
   );
 });

@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { download, inspectUrl, DEFAULT_OUT_DIR } from './downloader.mjs';
 import { matchSite, extractUrls } from './sites.mjs';
 import { loadConfig, saveConfig, isValidProxy } from './config.mjs';
-import { loadHistory, appendHistory } from './history.mjs';
+import { loadHistory, appendHistory, removeHistory } from './history.mjs';
 import { openCommand, revealCommand, listRoots } from './platform.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -505,6 +505,27 @@ export function createApp(opts = {}) {
         const hist = loadHistory();
         const totalBytes = hist.reduce((s, r) => s + (r.sizeBytes || 0), 0);
         send(200, { totalFiles: hist.length, totalBytes });
+        return;
+      }
+
+      if (req.method === 'POST' && req.url === '/api/history/delete') {
+        const body = await readJson(req);
+        const id = String(body.id || '');
+        const t = tasks.get(id);
+        if (!t) {
+          send(404, { error: '任务不存在' });
+          return;
+        }
+        if (t.status === 'running' || t.status === 'queued') {
+          send(400, { error: '任务进行中，请先终止' });
+          return;
+        }
+        tasks.delete(id);
+        try { removeHistory(id); } catch {}
+        // 广播删除事件（前端收到后从列表移除）
+        const data = JSON.stringify({ type: 'delete', id });
+        for (const res of clients) res.write(`data: ${data}\n\n`);
+        send(200, { ok: true });
         return;
       }
 

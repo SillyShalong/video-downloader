@@ -18,6 +18,7 @@ export const api = {
   inspect: (input) => post('/api/inspect', { input }),
   download: (payload) => post('/api/download', payload),
   retry: (id) => post('/api/retry', { id }),
+  deleteHistory: (id) => post('/api/history/delete', { id }),
   pause: (id) => post('/api/pause', { id }),
   cancel: (id) => post('/api/cancel', { id }),
   openFile: (path) => post('/api/open', { path }),

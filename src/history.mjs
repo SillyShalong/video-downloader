@@ -24,3 +24,9 @@ export function appendHistory(record, file = FILE) {
   writeFileSync(file, JSON.stringify(all.slice(-MAX_RECORDS), null, 2), 'utf8');
   return record;
 }
+
+/** 按 id 删除一条记录 */
+export function removeHistory(id, file = FILE) {
+  const all = loadHistory(file).filter((r) => r.id !== id);
+  writeFileSync(file, JSON.stringify(all.slice(-MAX_RECORDS), null, 2), 'utf8');
+}

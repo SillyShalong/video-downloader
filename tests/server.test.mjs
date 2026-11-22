@@ -353,6 +353,29 @@ test('终止：运行中任务可终止', { timeout: 60000 }, async () => {
   assert.equal((await post('/api/cancel', { id })).status, 400);
 });
 
+test('POST /api/history/delete: 删除历史记录（含持久化）', { timeout: 60000 }, async () => {
+  // 先下一个任务产生历史
+  const outDir = path.join(tmpRoot, 'del-dl');
+  const { body } = await post('/api/download', { input: STUB_URL, outDir });
+  const id = body.tasks[0].id;
+  const done = await waitTask(id, 30000);
+  assert.equal(done?.status, 'done');
+  // 确认历史文件里有这条
+  const hist1 = JSON.parse(readFileSync(process.env.VD_HISTORY_PATH, 'utf8'));
+  assert.ok(hist1.some((r) => r.id === id));
+  // 删除
+  const del = await post('/api/history/delete', { id });
+  assert.equal(del.status, 200, del.body?.error);
+  // 任务列表里没了
+  const list = (await j('/api/tasks')).body.tasks;
+  assert.ok(!list.some((t) => t.id === id), '任务列表应不含已删除项');
+  // 持久化文件里也没了
+  const hist2 = JSON.parse(readFileSync(process.env.VD_HISTORY_PATH, 'utf8'));
+  assert.ok(!hist2.some((r) => r.id === id), 'history.json 应不含已删除项');
+  // 不存在的 → 404
+  assert.equal((await post('/api/history/delete', { id: 'nope' })).status, 404);
+});
+
 test('GET /api/stats: 基于历史的累计统计', async () => {
   const { body } = await j('/api/stats');
   assert.ok(body.totalFiles >= 1, '至少一条历史');
