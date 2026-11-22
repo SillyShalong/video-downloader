@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 下载 yt-dlp.exe 与 ffmpeg.exe 到 bin/（已存在则跳过，--force 强制重新下载）
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -47,7 +47,11 @@ if (!existsSync(ffmpeg) || force) {
     { stdio: 'inherit' },
   );
   if (r.status !== 0) throw new Error('解压失败');
-  renameSync(path.join(tmp, 'out', 'ffmpeg-master-latest-win64-gpl', 'bin', 'ffmpeg.exe'), ffmpeg);
+  // zip 内层目录名带版本号（随上游构建变化），动态发现而非硬编码
+  const outDir = path.join(tmp, 'out');
+  const inner = readdirSync(outDir).find((d) => existsSync(path.join(outDir, d, 'bin', 'ffmpeg.exe')));
+  if (!inner) throw new Error('解压后未找到 bin/ffmpeg.exe');
+  renameSync(path.join(outDir, inner, 'bin', 'ffmpeg.exe'), ffmpeg);
   rmSync(tmp, { recursive: true, force: true });
 } else {
   console.log('ffmpeg.exe 已存在，跳过');
