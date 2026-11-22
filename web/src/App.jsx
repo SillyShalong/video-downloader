@@ -36,6 +36,7 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import { api, midTrunc, SITE_LABEL, fmtSpeed, fmtBytes, fmtEta, serverBase } from './api.js';
+import { t, getLang, setLang, LANGUAGES } from './i18n.js';
 import logoUrl from './assets/logo.svg';
 
 const { Text, Paragraph } = Typography;
@@ -66,7 +67,8 @@ const STATUS_ICON = {
   cancelled: <StopOutlined />,
 };
 
-const STATUS_TEXT = { queued: '排队', running: '下载', done: '完成', error: '失败', paused: '暂停', cancelled: '终止' };
+const STATUS_TEXT_KEY = { queued: 'stQueued', running: 'stRunning', done: 'stDone', error: 'stError', paused: 'stPaused', cancelled: 'stCancelled' };
+const stText = (s) => t(STATUS_TEXT_KEY[s] || s);
 
 /* ---- 紧凑任务行（单行 + 进度条，点击开详情抽屉） ---- */
 const TaskRow = memo(
@@ -130,7 +132,7 @@ function DetailDrawer({ t, onClose, onRetry, onOpen, onReveal, onDelete }) {
         <Flex gap={8} align="center">
           <span className={`tsi ${t.status}`}>{STATUS_ICON[t.status]}</span>
           <Tag color={t.status === 'done' ? 'success' : t.status === 'error' ? 'error' : t.status === 'running' ? 'processing' : 'default'}>
-            {STATUS_TEXT[t.status] || t.status}
+            {stText(t.status)}
           </Tag>
           <span className="chip">{SITE_LABEL[t.site] || t.site}</span>
           <span className="chip q">{qLabel}</span>
@@ -148,25 +150,25 @@ function DetailDrawer({ t, onClose, onRetry, onOpen, onReveal, onDelete }) {
         )}
 
         <div>
-          <Text type="secondary" className="tag-label">原始链接</Text>
+          <Text type="secondary" className="tag-label">{t('originalUrl')}</Text>
           <Typography.Paragraph copyable ellipsis style={{ margin: 0 }}>{t.url}</Typography.Paragraph>
         </div>
 
         {t.file && (
           <div>
-            <Text type="secondary" className="tag-label">文件位置</Text>
+            <Text type="secondary" className="tag-label">{t('fileLocation')}</Text>
             <Typography.Paragraph copyable ellipsis style={{ margin: 0 }}>{t.file}</Typography.Paragraph>
           </div>
         )}
 
         <div>
-          <Text type="secondary" className="tag-label">时间</Text>
+          <Text type="secondary" className="tag-label">{t('timestamp')}</Text>
           <Text>{new Date(t.createdAt).toLocaleString('zh-CN')}</Text>
         </div>
 
         {t.error && (
           <div>
-            <Text type="secondary" className="tag-label">错误</Text>
+            <Text type="secondary" className="tag-label">{t('errorLabel')}</Text>
             <div className="err">{t.error}</div>
           </div>
         )}
@@ -184,8 +186,8 @@ function DetailDrawer({ t, onClose, onRetry, onOpen, onReveal, onDelete }) {
               {t.status === 'error' ? '重试' : '恢复'}
             </Button>
           )}
-          {t.file && <Button icon={<PlaySquareOutlined />} onClick={() => onOpen(t.file)}>打开文件</Button>}
-          {t.file && <Button icon={<FolderOpenOutlined />} onClick={() => onReveal(t.file)}>打开文件夹</Button>}
+          {t.file && <Button icon={<PlaySquareOutlined />} onClick={() => onOpen(t.file)}>{t('openFile')}</Button>}
+          {t.file && <Button icon={<FolderOpenOutlined />} onClick={() => onReveal(t.file)}>{t('openFolder')}</Button>}
           {t.status !== 'running' && t.status !== 'queued' && (
             <Popconfirm title="删除此历史记录？" onConfirm={() => { onDelete(t.id); onClose(); }} okText="删除" cancelText="取消">
               <Button danger icon={<DeleteOutlined />}>删除</Button>
@@ -220,6 +222,7 @@ export default function App() {
   const [selection, setSelection] = useState(null); // 多视频源选择 {entries, checked, input, outDir}
   const [submitting, setSubmitting] = useState(false);
   const [detailTask, setDetailTask] = useState(null); // 详情抽屉当前任务
+  const [langTick, setLangTick] = useState(0); // 语言切换时强制重渲染
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
 
@@ -469,7 +472,7 @@ export default function App() {
           shape="default"
           icon={<SettingOutlined />}
           onClick={() => setSettingsOpen((v) => !v)}
-          title="设置（网络代理 / B站登录）"
+          title={t('settings')}
         />
       </header>
 
@@ -507,7 +510,7 @@ export default function App() {
             </Flex>
             <Text type="secondary" className="note">获取：B 站网页版登录 → F12 → 应用 → Cookie → 复制 SESSDATA 的值。</Text>
 
-            <Text type="secondary" className="tag-label" style={{ marginTop: 8 }}>远程模式 · 服务器地址（手机/平板用）</Text>
+            <Text type="secondary" className="tag-label" style={{ marginTop: 8 }}>{t('remoteTitle')}</Text>
             <Flex gap={8} wrap="wrap">
               <Input
                 id="server-input"
@@ -529,6 +532,13 @@ export default function App() {
               </Button>
             </Flex>
             <Text type="secondary" className="note">安卓 App / 手机浏览器（PWA）连桌面服务时填；桌面本机使用请留空。</Text>
+
+            <Text type="secondary" className="tag-label" style={{ marginTop: 8 }}>{t('language')}</Text>
+            <Segmented
+              options={LANGUAGES}
+              value={getLang()}
+              onChange={(v) => { setLang(v); setLangTick((x) => x + 1); }}
+            />
           </Flex>
         </Card>
       </div>
@@ -547,7 +557,7 @@ export default function App() {
 
       {/* 输入区 */}
       <Card>
-        <Text type="secondary" className="tag-label">视频链接 / 分享口令（支持多条，混合站点）</Text>
+        <Text type="secondary" className="tag-label">{t('inputLabel')}</Text>
         <Input.TextArea
           id="input"
           rows={3}
@@ -573,7 +583,7 @@ export default function App() {
 
         <Flex gap={14} wrap="wrap" align="flex-end" className="controls">
           <Flex vertical gap={7}>
-            <Text type="secondary" className="tag-label">清晰度</Text>
+            <Text type="secondary" className="tag-label">{t('quality')}</Text>
             <div id="quality" className={audioOn ? 'seg disabled' : 'seg'}>
               <Segmented
                 options={QUALITY_OPTIONS}
@@ -585,7 +595,7 @@ export default function App() {
           </Flex>
 
           <Flex vertical gap={7}>
-            <Text type="secondary" className="tag-label">格式</Text>
+            <Text type="secondary" className="tag-label">{t('format')}</Text>
             <Flex align="center" gap={9} style={{ height: 32 }}>
               <Switch
                 id="audio"
@@ -594,13 +604,13 @@ export default function App() {
                 disabled={audioDisabled}
                 onChange={setAudio}
               />
-              <span>仅音频</span>
+              <span>{t('audioOnly')}</span>
               <Text type="secondary" style={{ fontSize: 11 }}>mp3</Text>
             </Flex>
           </Flex>
 
           <Flex vertical gap={7} style={{ flex: 1, minWidth: 230 }}>
-            <Text type="secondary" className="tag-label">保存到</Text>
+            <Text type="secondary" className="tag-label">{t('saveTo')}</Text>
             <Flex gap={8}>
               <Input
                 id="outdir"
@@ -612,7 +622,7 @@ export default function App() {
                   localStorage.setItem('vd.outdir', e.target.value.trim());
                 }}
               />
-              <Button id="dir-browse" icon={<FolderOpenOutlined />} onClick={browse}>浏览…</Button>
+              <Button id="dir-browse" icon={<FolderOpenOutlined />} onClick={browse}>{t('browse')}</Button>
               <Button
                 id="dir-reset"
                 onClick={() => {
@@ -627,14 +637,14 @@ export default function App() {
           </Flex>
 
           <Button id="btn" type="primary" icon={<DownloadOutlined />} onClick={submit} loading={submitting}>
-            {submitting ? '探测中…' : '开始下载'}
+            {submitting ? t('inspecting') : t('startDownload')}
           </Button>
         </Flex>
       </Card>
 
       {/* 任务区 */}
       <div className="section-head">
-        <h2>下载任务</h2>
+        <h2>{t('tasks')}</h2>
         <span className="line" />
         {stats && (
           <span className="stats-chip" title="基于下载历史的累计统计">
@@ -677,8 +687,8 @@ export default function App() {
         width={620}
         footer={[
           <Button key="cancel" onClick={() => setSelection(null)}>取消</Button>,
-          <Button key="all" onClick={() => setSelection((s) => s && { ...s, checked: s.entries.map(() => true) })}>全选</Button>,
-          <Button key="none" onClick={() => setSelection((s) => s && { ...s, checked: s.entries.map(() => false) })}>全不选</Button>,
+          <Button key="all" onClick={() => setSelection((s) => s && { ...s, checked: s.entries.map(() => true) })}>{t('selectAll')}</Button>,
+          <Button key="none" onClick={() => setSelection((s) => s && { ...s, checked: s.entries.map(() => false) })}>{t('selectNone')}</Button>,
           <Button key="ok" type="primary" onClick={confirmSelection} loading={submitting}>
             下载选中（{selection?.checked?.filter(Boolean).length ?? 0} 个）
           </Button>,

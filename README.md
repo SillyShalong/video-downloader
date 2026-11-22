@@ -2,20 +2,20 @@
 
 <img src="docs/icon.png" width="96" alt="Video Downloader" />
 
-# 🎬 Video Downloader
+# Video Downloader
 
-**一个界面精致的视频下载工具 —— YouTube · 抖音 · 哔哩哔哩 · 小红书**
+**A polished video download tool — YouTube · Douyin · Bilibili · Xiaohongshu · 1000+ sites**
 
 [![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/SillyShalong/video-downloader/releases)
 [![Electron](https://img.shields.io/badge/Electron-45-9feaf9?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)](https://react.dev/)
 [![Ant Design](https://img.shields.io/badge/Ant_Design-6-1677ff?logo=antdesign&logoColor=white)](https://ant.design/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-46%20%E9%A1%B9-brightgreen)](#-自动化测试)
+[![Tests](https://img.shields.io/badge/tests-63%20cases-brightgreen)](#-automated-tests)
 
-**桌面应用 + 命令行双形态** · 清晰度自选 · 代理支持 · 失败自动重试 · 全程 H.264 兼容编码
+**Desktop app + CLI + Android** · Quality selection · Real-time speed · Pause/Cancel · Download history · H.264 output · Bilingual UI
 
-[下载安装包](#-下载安装) · [快速上手](#-快速上手) · [开发指南](#-开发)
+[Download](#-install) · [Quick Start](#-quick-start) · [Development](#-development) · [中文文档](README.zh-CN.md)
 
 </div>
 
@@ -23,130 +23,123 @@
 
 ![screenshot](docs/screenshot.png)
 
-## ✨ 特性
+## ✨ Features
 
 | | | |
 |---|---|---|
-| 🌍 **四大平台** | YouTube（含 Shorts/播放列表）、抖音、哔哩哔哩、小红书 | 粘贴链接或**整段分享口令**，自动识别站点 |
-| 🎞 **清晰度自选** | 最佳 / 1080p / 720p / 540p / 360p | B 站支持 SESSDATA 登录解锁高清晰度 |
-| 🗂 **下载历史** | 元数据持久化（原始链接/目标路径），重启不丢 | 一键「打开文件」（系统默认播放器）或「打开文件夹」定位 |
-| 🌐 **代理支持** | HTTP / SOCKS5，一键测试连通 | 抖音/小红书智能直连不走代理 |
-| 🔁 **稳定下载** | 瞬时错误（403/超时）自动重试，**支持暂停/终止**（断点续传） | 实时速度 / 剩余时间 / 已下载量 + 累计统计 |
-| 🖥 **双形态** | Electron 桌面应用（原生目录选择框） | CLI 命令行（脚本友好） |
-| 🧪 **质量保障** | 46 项自动化测试（单元/服务端/GUI 无头浏览器回归） | 下载中零闪烁（DOM 增量渲染） |
+| 🌍 **1000+ sites** | YouTube (Shorts/playlists), Douyin, Bilibili, Xiaohongshu + all yt-dlp supported sites | Paste URL or full **share text** — auto-detected |
+| 🎞 **Quality selection** | Best / 1080p / 720p / 540p / 360p | Bilibili SESSDATA login for higher quality |
+| 📋 **Multi-source picker** | Playlists/channels auto-detected | Check the videos you want, download only those |
+| 🗂 **Download history** | Full metadata persisted (URL, path, size) | Compact list + detail drawer, delete individual records |
+| 🛡 **H.264 guaranteed** | All sites lock H.264+AAC | Windows default player works, no black screen |
+| 🌐 **Proxy support** | HTTP/SOCKS5 with one-click test | Douyin/Xiaohongshu auto-bypass (domestic) |
+| 🔁 **Stable downloads** | Auto-retry transient errors (403/timeout) | Manual pause / cancel / resume (断点续传) |
+| 📱 **Android app** | Standalone Bilibili engine + remote mode | Same UI, controls desktop via LAN |
+| 🌏 **Bilingual** | 中文 / English UI toggle in settings | All labels, buttons, messages translated |
+| 🖥 **Dual interface** | Electron desktop (native dialogs) | CLI for scripting (`node cli.mjs`) |
 
-## 📥 下载安装
+## 📥 Install
 
-**普通用户（推荐）**：到 [Releases](https://github.com/SillyShalong/video-downloader/releases) 下载最新版：
+**End users (recommended)**: Download from [Releases](https://github.com/SillyShalong/video-downloader/releases):
 
-- `VideoDownloader-Setup-x.y.z-x64.exe` — Windows 安装包（可选安装目录、创建桌面快捷方式）
-- `VideoDownloader-Portable-x.y.z-x64.exe` — Windows 便携版（免安装，双击即用）
+- `VideoDownloader-Setup-x.y.z-x64.exe` — Windows installer (choose directory, desktop shortcut)
+- `VideoDownloader-Portable-x.y.z-x64.exe` — Windows portable (no install needed)
+- `VideoDownloader-Android-vX.Y.Z.apk` — Android app (standalone Bilibili + remote mode)
 
-开箱即用，无需安装 Node.js / Python，yt-dlp、ffmpeg、deno 全部内置。
+No Node.js/Python required — yt-dlp, ffmpeg, and deno are all bundled.
 
-**从源码运行**：
+**From source**:
 
 ```bash
 git clone https://github.com/SillyShalong/video-downloader.git
 cd video-downloader
-npm install          # 安装依赖（Electron / React / AntD / Capacitor）
-npm run setup        # 下载 yt-dlp / ffmpeg / deno 到 bin/
-npm run build:web    # 构建前端
-npm start            # 启动桌面应用
+npm install
+npm run setup        # Download yt-dlp / ffmpeg / deno
+npm run build:web    # Build frontend
+npm start            # Launch desktop app
 ```
 
-## 📱 手机 / 平板（远程模式）
-
-Node 引擎无法跑在手机上，移动端为「**远程模式**」——操控局域网里的桌面服务（下载、清晰度、进度/速度、暂停终止全部可用，文件落在桌面机）：
-
-1. 桌面端执行：`node gui.mjs --lan`（打印手机可访问地址，如 `http://192.168.1.19:8321`）
-2. 手机任选其一：
-   - **浏览器直接打开**该地址（可添加到主屏幕当 PWA 用）
-   - **安卓 App**：本仓库 `android/` 为 Capacitor 工程（同一套 UI）。装好 Android Studio 后
-     `npx cap sync android && cd android && gradlew assembleDebug` 生成 APK；
-     App 内 ⚙ → 「远程模式 · 服务器地址」填桌面地址
-
-## 🖥 架构
-
-```
-同一份 core（src/）+ 同一套 UI（web/React）
- ├ Windows → Electron 桌面应用（当前发布平台）
- │   平台差异已收敛在 src/platform.mjs（二进制命名/打开定位文件/根目录/
- │   Chromium 发现/进程树击杀），Linux/macOS 移植时只需在对应平台构建
- └ Android → Capacitor 壳 + 远程模式（服务端已开 CORS）
-```
-
-> 路线图备注：macOS（arm64）/ Linux（x64/arm64）适配已完成核心抽象与打包配置，
-> 暂缓发布——恢复时在对应平台执行 `npm run setup && npm run dist:mac|dist:linux` 即可。
-
-## 🚀 快速上手
+## 🚀 Quick Start
 
 ### GUI
 
-1. 粘贴视频链接或整段分享口令（支持一次多条、混合站点）
-2. 选择清晰度 → 点「开始下载」
-3. 任务卡实时显示进度，完成后可「打开文件夹」定位文件
+1. Paste a video URL or share text (multiple links supported)
+2. Select quality → Click **Download**
+3. For playlists: check the videos you want in the selection modal
+4. Real-time progress with speed/ETA; click any row for full details
 
 ### CLI
 
 ```bash
 node cli.mjs "https://www.youtube.com/watch?v=xxxx"          # YouTube
-node cli.mjs "抖音分享口令整段直接粘贴"                        # 抖音
-node cli.mjs "https://www.bilibili.com/video/BV1xx411c7mD" -q 1080   # B站 1080p
-node cli.mjs --audio "https://youtu.be/xxxx" -o D:/Music      # 仅音频转 mp3
-node cli.mjs "https://youtu.be/xxxx" -p http://127.0.0.1:7890 # 走代理
+node cli.mjs "douyin share text"                              # Douyin
+node cli.mjs "https://www.bilibili.com/video/BV..." -q 1080  # Bilibili 1080p
+node cli.mjs --audio "https://youtu.be/xxxx" -o D:/Music      # Audio only (mp3)
+node cli.mjs "https://youtu.be/xxxx" -p http://127.0.0.1:7890 # Via proxy
 ```
 
-## 🔧 平台说明
+### Android
 
-| 平台 | 引擎 | 说明 |
+- **Standalone**: Open app → paste Bilibili link → download directly to phone
+- **Remote mode**: Desktop runs `node gui.mjs --lan` → app ⚙ Settings → enter server address
+
+## 🔧 Platform Details
+
+| Platform | Engine | Notes |
 |---|---|---|
-| YouTube | yt-dlp + deno（解 JS 签名） | 高画质音视频流自动合并；代理生效 |
-| 哔哩哔哩 | yt-dlp | 多 P 全下；⚙ 设置里填 SESSDATA 解锁 720p+；代理生效 |
-| 抖音 | 自研（无头 Edge 页内签名） | 绕过 Argus 风控，无水印直链；**必须分享链接**；国内直连 |
-| 小红书 | 自研（无头 Edge 读页面数据） | **必须 App 分享出来的链接**（裸链接被平台拦截）；国内直连 |
+| YouTube | yt-dlp + deno (JS challenges) | Proxy supported; DASH auto-merge |
+| Bilibili | yt-dlp | Multi-part supported; SESSDATA for 720p+; proxy supported |
+| Douyin | Custom (headless Edge in-page signing) | Bypasses Argus anti-bot; watermark-free; **must use share links** |
+| Xiaohongshu | Custom (headless Edge page data) | **Must use App share links** (bare URLs blocked) |
+| HLS sites | Custom (headless Edge + m3u8 extraction) | Cloudflare-protected streaming; domains via `config.json` `hlsSites` |
+| Other sites | yt-dlp generic | Auto-covered (1000+ sites) |
 
-> 💡 为什么抖音/小红书需要「分享」出来的链接？这两个平台的反爬在网关级，
-> 直接复制的地址缺少一次性 token，平台会直接拒绝（错误 300031）。
+## 📱 Mobile / Tablet (Remote Mode)
 
-## 🧪 自动化测试
+Node.js engine can't run on phones; mobile uses **remote mode** — controls the desktop service over LAN:
 
-```bash
-npm test              # 构建前端 + 全量测试
-npm run test:gui      # 仅 GUI 回归（无头 Edge 驱动真实页面）
-npm run test:network  # 额外启用外网用例
-```
+1. Desktop: `node gui.mjs --lan` (prints phone-accessible address)
+2. Phone: Open the address in browser (add to home screen as PWA), or use the Android app
 
-46 项测试覆盖：站点识别、分享口令解析、下载参数构建（H.264 锁定回归）、
-代理校验、explorer 定位命令行、下载任务全链路（SSE → 落盘）、
-失败重试、**下载中任务卡防闪烁（DOM 节点身份断言）**、弹窗四种关闭方式等。
+Full functionality: submit downloads, select quality, real-time progress, pause/cancel.
 
-## 🛠 开发
-
-```
-web/src/         React + AntD 前端（Vite）
-electron/        Electron 主进程（原生对话框注入）
-src/             下载引擎（yt-dlp 封装 / 抖音 / 小红书 / 任务队列 / SSE）
-bin/             yt-dlp · ffmpeg · deno（npm run setup 下载）
-tests/           node:test 三层测试（单元 / 服务端 / GUI）
-```
+## 🧪 Automated Tests
 
 ```bash
-npm run dev       # 前端热更新开发
-npm run dist      # 打包 Windows 安装包 + 便携版（release/）
+npm test              # Build frontend + all tests
+npm run test:gui      # GUI regression only (headless Edge drives real page)
+npm run test:network  # Enable external network tests
+```
+
+63 test cases covering: site detection, share text parsing, download args (H.264 lock regression), proxy validation, explorer command line, download task full pipeline (SSE → disk), retry/pause/cancel, download history persistence, multi-source selection, anti-flicker (DOM node identity), modal close methods, remote mode connection errors.
+
+## 🛠 Development
+
+```
+web/src/         React + AntD frontend (Vite, bilingual)
+electron/        Electron main process (native dialogs, paths)
+src/             Core engines (yt-dlp wrapper / Douyin / Xiaohongshu / HLS / task queue / SSE)
+bin/             yt-dlp · ffmpeg · deno (npm run setup)
+android/         Capacitor project (same UI, standalone Bilibili engine in Kotlin)
+tests/           node:test 3-layer tests (unit / server / GUI)
+```
+
+```bash
+npm run dev       # Frontend hot-reload
+npm run dist      # Package Windows installer + portable (release/)
+npm test          # Full test suite
 ```
 
 ## ❓ FAQ
 
-**下载的视频只有声音没有画面？**
-不会。本工具全站锁定 H.264 编码（yt-dlp 默认会选 VP9/AV1，Windows 播放器解不了），
-无 H.264 源时自动转码兜底。
+**Video has audio but no picture?**
+No. All downloads lock H.264 encoding (yt-dlp defaults to VP9/AV1 which Windows players can't decode). Non-H.264 sources are auto-transcoded.
 
-**B 站只能下 480p？**
-游客身份部分视频限 480p。⚙ 设置 → 填 SESSDATA（浏览器 F12 → Cookie 里复制）即可解锁。
+**Bilibili limited to 480p?**
+Guest access caps some videos. ⚙ Settings → paste SESSDATA (browser F12 → Cookie) to unlock.
 
-**下载失败提示 403？**
-多为代理出口 IP 变动，本工具已内置 3 次自动重试；仍失败可点任务卡上的「重试」。
+**Download fails with 403?**
+Usually proxy exit IP rotation. Built-in auto-retry (3 attempts); manual retry available on task row.
 
 ## 📄 License
 
@@ -155,5 +148,5 @@ npm run dist      # 打包 Windows 安装包 + 便携版（release/）
 ---
 
 <div align="center">
-⭐ 如果对你有帮助，欢迎 Star 支持一下！
+⭐ If this helps you, consider giving it a Star!
 </div>
