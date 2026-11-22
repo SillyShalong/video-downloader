@@ -7,13 +7,14 @@ import { matchSite } from './sites.mjs';
 import { downloadDouyin } from './douyin.mjs';
 import { downloadXiaohongshu } from './xiaohongshu.mjs';
 import { loadConfig } from './config.mjs';
+import { ytDlpName, ffmpegName, killTree } from './platform.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(__dirname, '..');
 // 打包版（Electron）通过环境变量指向 resources/bin 与系统下载目录
 const BIN_DIR = process.env.VD_BIN_DIR || path.join(ROOT, 'bin');
-const YTDLP = path.join(BIN_DIR, 'yt-dlp.exe');
-const FFMPEG = path.join(BIN_DIR, 'ffmpeg.exe');
+const YTDLP = path.join(BIN_DIR, ytDlpName());
+const FFMPEG = path.join(BIN_DIR, ffmpegName());
 export const DEFAULT_OUT_DIR = process.env.VD_OUT_DIR || path.join(ROOT, 'downloads');
 
 const OUTPUT_TEMPLATE = '%(title)s [%(id)s].%(ext)s';
@@ -37,13 +38,7 @@ export function parseProgressDetail(line) {
   return { total, speed, eta };
 }
 
-/** 终止一个进程及其子进程树（Windows：yt-dlp 合并时会拉起 ffmpeg 子进程） */
-function killTree(child) {
-  if (!child.pid) return;
-  try {
-    spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' });
-  } catch {}
-}
+/** 终止一个进程及其子进程树（跨平台实现见 platform.mjs） */
 
 /** 瞬时网络错误（可整层重试）：403/429/超时/连接中断等 */
 const TRANSIENT_ERR_RE =

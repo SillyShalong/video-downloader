@@ -8,3 +8,11 @@ web/dist/
 release/
 .test*.log
 *.log
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/.idea/
+android/app/.cxx/
+android/capacitor-cordova-android-plugins/build/
+*.keystore

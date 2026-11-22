@@ -1,0 +1,11 @@
+{
+  "appId": "com.sillyshalong.videodownloader",
+  "appName": "Video Downloader",
+  "webDir": "web/dist",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

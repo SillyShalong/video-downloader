@@ -1,6 +1,13 @@
 // 后端 API 封装
+// 远程模式：设置面板填「服务器地址」后（存 localStorage.vd.server），
+// 所有请求与 SSE 走该地址（手机/PWA 操控桌面服务）；桌面本机运行为空 = 同源。
+export const serverBase = () => {
+  const s = localStorage.getItem('vd.server') || '';
+  return s.replace(/\/+$/, '');
+};
+
 const post = (p, body) =>
-  fetch(p, {
+  fetch(serverBase() + p, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
@@ -18,9 +25,10 @@ export const api = {
   proxyTest: (proxy) => post('/api/proxy-test', { proxy }),
   saveProxy: (proxy) => post('/api/config', { proxy }),
   saveSessdata: (bilibiliSessdata) => post('/api/config', { bilibiliSessdata }),
-  getConfig: () => fetch('/api/config').then((r) => r.json()),
-  getTasks: () => fetch('/api/tasks').then((r) => r.json()),
-  fsList: (dir) => fetch('/api/fs/list' + (dir ? '?dir=' + encodeURIComponent(dir) : '')).then((r) => r.json()),
+  getConfig: () => fetch(serverBase() + '/api/config').then((r) => r.json()),
+  getTasks: () => fetch(serverBase() + '/api/tasks').then((r) => r.json()),
+  fsList: (dir) =>
+    fetch(serverBase() + '/api/fs/list' + (dir ? '?dir=' + encodeURIComponent(dir) : '')).then((r) => r.json()),
 };
 
 export function midTrunc(name, head = 24, tail = 14) {

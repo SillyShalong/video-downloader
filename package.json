@@ -18,7 +18,10 @@
     "test:unit": "node --test tests/unit.test.mjs",
     "test:server": "node --test tests/server.test.mjs",
     "test:gui": "node --test tests/gui.test.mjs",
-    "test:network": "RUN_NETWORK_TESTS=1 node --test tests/"
+    "test:network": "RUN_NETWORK_TESTS=1 node --test tests/",
+    "dist:win": "npm run build:web --silent && electron-builder --win",
+    "dist:mac": "npm run build:web --silent && electron-builder --mac",
+    "dist:linux": "npm run build:web --silent && electron-builder --linux"
   },
   "build": {
     "appId": "io.github.SillyShalong.video-downloader",
@@ -66,10 +69,37 @@
     },
     "portable": {
       "artifactName": "VideoDownloader-Portable-${version}-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "Utility",
+      "icon": "build/icon.png"
     }
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/cli": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
     "antd": "^6.7.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"

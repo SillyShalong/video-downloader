@@ -168,6 +168,82 @@ test('buildExplorerArgs: 目录直接打开；路径中的引号被剥离', () =
   assert.equal(clean, '/select,"C:\\ab\\c.mp4"');
 });
 
+// ---------- 跨平台抽象（platform.mjs） ----------
+const platform = await import('../src/platform.mjs');
+
+test('platform: revealCommand 三平台命令形态', () => {
+  // Windows：explorer + verbatim（引号仅包路径的回归约束）
+  const w = platform.revealCommand('C:\\a b\\v.mp4', false, 'win32');
+  assert.equal(w.file, 'explorer.exe');
+  assert.deepEqual(w.args, ['/select,"C:\\a b\\v.mp4"']);
+  assert.equal(w.verbatim, true);
+  // macOS：open -R 在 Finder 定位
+  const m = platform.revealCommand('/Users/x/v.mp4', false, 'darwin');
+  assert.deepEqual([m.file, m.args], ['open', ['-R', '/Users/x/v.mp4']]);
+  assert.equal(m.verbatim, false);
+  // Linux：xdg-open 打开所在目录
+  const l = platform.revealCommand('/home/x/v.mp4', false, 'linux');
+  assert.equal(l.file, 'xdg-open');
+  assert.deepEqual(l.args, ['/home/x']);
+});
+
+test('platform: openCommand 三平台命令形态', () => {
+  const w = platform.openCommand('C:\\a b.mp4', 'win32');
+  assert.deepEqual([w.file, w.args], ['cmd', ['/c', 'start', '', 'C:\\a b.mp4']]);
+  const m = platform.openCommand('/Users/x/a.mp4', 'darwin');
+  assert.deepEqual([m.file, m.args], ['open', ['/Users/x/a.mp4']]);
+  const l = platform.openCommand('/home/x/a.mp4', 'linux');
+  assert.deepEqual([l.file, l.args], ['xdg-open', ['/home/x/a.mp4']]);
+});
+
+test('platform: 二进制名按平台解析', () => {
+  assert.equal(platform.ytDlpName('win32'), 'yt-dlp.exe');
+  assert.equal(platform.ytDlpName('darwin'), 'yt-dlp');
+  assert.equal(platform.ytDlpName('linux'), 'yt-dlp');
+  assert.equal(platform.ffmpegName('win32'), 'ffmpeg.exe');
+  assert.equal(platform.ffmpegName('linux'), 'ffmpeg');
+  assert.equal(platform.denoName('win32'), 'deno.exe');
+  assert.equal(platform.denoName('darwin'), 'deno');
+});
+
+// ---------- setup.mjs 下载计划（多平台资产 URL） ----------
+const { planAssets } = await import('../scripts/setup.mjs');
+
+test('planAssets: 五种 OS/arch 组合的下载计划', () => {
+  const win = planAssets('win32', 'x64');
+  assert.ok(win.ytdlp.url.endsWith('/yt-dlp.exe'));
+  assert.ok(win.deno.url.endsWith('/deno-x86_64-pc-windows-msvc.zip'));
+  assert.equal(win.ffmpeg.mode, 'zip'); // Windows 走 FFmpeg-Builds 全功能包
+  assert.equal(win.ytdlp.file, 'yt-dlp.exe');
+
+  const macArm = planAssets('darwin', 'arm64');
+  assert.ok(macArm.ytdlp.url.endsWith('/yt-dlp_macos')); // 通用二进制
+  assert.ok(macArm.deno.url.endsWith('/deno-aarch64-apple-darwin.zip'));
+  assert.equal(macArm.ffmpeg.mode, 'single');
+  assert.ok(macArm.ffmpeg.url.endsWith('/ffmpeg-darwin-arm64'));
+
+  const macX64 = planAssets('darwin', 'x64');
+  assert.ok(macX64.ffmpeg.url.endsWith('/ffmpeg-darwin-x64'));
+  assert.ok(macX64.deno.url.endsWith('/deno-x86_64-apple-darwin.zip'));
+
+  const linX64 = planAssets('linux', 'x64');
+  assert.ok(linX64.ytdlp.url.endsWith('/yt-dlp'));
+  assert.ok(linX64.ffmpeg.url.endsWith('/ffmpeg-linux-x64'));
+  assert.ok(linX64.deno.url.endsWith('/deno-x86_64-unknown-linux-gnu.zip'));
+
+  const linArm = planAssets('linux', 'arm64');
+  assert.ok(linArm.ytdlp.url.endsWith('/yt-dlp_linux_aarch64'));
+  assert.ok(linArm.ffmpeg.url.endsWith('/ffmpeg-linux-arm64'));
+  assert.ok(linArm.deno.url.endsWith('/deno-aarch64-unknown-linux-gnu.zip'));
+
+  // 非 Windows 产物名无 .exe（与 platform.mjs 命名一致）
+  for (const p of [macArm, linX64]) {
+    assert.equal(p.ytdlp.file, 'yt-dlp');
+    assert.equal(p.ffmpeg.file, 'ffmpeg');
+    assert.equal(p.deno.file, 'deno');
+  }
+});
+
 // ---------- 下载历史 ----------
 test('history: 保存/读取往返、同 id 去重、上限裁剪', async () => {
   const { loadHistory, appendHistory } = await import('../src/history.mjs');

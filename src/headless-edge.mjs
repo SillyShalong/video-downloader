@@ -1,16 +1,12 @@
-// 无头 Edge 控制模块（CDP 协议，零依赖：Node 22+ 自带全局 WebSocket）
+// 无头 Chromium 控制模块（CDP 协议，零依赖：Node 22+ 自带全局 WebSocket）
 // 用途：打开真实浏览器让页面自己的 JS 执行（生成签名/风控 cookie），再在页面上下文里调用 API。
+// 浏览器候选跨平台（Edge/Chrome/Chromium），见 platform.mjs。
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
-
-const EDGE_CANDIDATES = [
-  process.env.EDGE_PATH,
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-];
+import { chromiumCandidates } from './platform.mjs';
 
 const NORMAL_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0';
@@ -18,7 +14,7 @@ const NORMAL_UA =
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function findEdge() {
-  return EDGE_CANDIDATES.find((p) => p && existsSync(p)) ?? null;
+  return chromiumCandidates().find((p) => p) ?? null;
 }
 
 function freePort() {
@@ -73,7 +69,7 @@ function createCdp(wsUrl) {
  */
 export async function withPage(url, fn, { settleMs = 4000 } = {}) {
   const edge = findEdge();
-  if (!edge) throw new Error('未找到 msedge.exe，可设置环境变量 EDGE_PATH 指定路径');
+  if (!edge) throw new Error('未找到可用的 Chromium 浏览器（Edge/Chrome），可设置环境变量 EDGE_PATH 或 CHROMIUM_PATH 指定路径');
 
   const port = await freePort();
   const profile = mkdtempSync(path.join(tmpdir(), 'vd-edge-'));

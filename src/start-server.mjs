@@ -1,8 +1,8 @@
 // 服务启动共享逻辑：gui.mjs（Edge 窗口/浏览器模式）与 electron/main.mjs 共用
 import { createApp } from './server.mjs';
 
-/** 在 127.0.0.1 上监听，端口被占则自动 +1，返回 { url, close }。opts 透传给 createApp */
-export async function startServer(preferredPort = 8321, opts = {}) {
+/** 监听指定地址（默认 127.0.0.1；--lan 传 0.0.0.0），端口被占则自动 +1，返回 { url, close } */
+export async function startServer(preferredPort = 8321, opts = {}, host = '127.0.0.1') {
   const server = createApp(opts);
 
   function listen(port) {
@@ -17,7 +17,7 @@ export async function startServer(preferredPort = 8321, opts = {}) {
       };
       server.once('error', onError);
       server.once('listening', onOk);
-      server.listen(port, '127.0.0.1');
+      server.listen(port, host);
     });
   }
 

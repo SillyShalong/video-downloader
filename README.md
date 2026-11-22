@@ -39,8 +39,9 @@
 
 **普通用户（推荐）**：到 [Releases](https://github.com/SillyShalong/video-downloader/releases) 下载最新版：
 
-- `VideoDownloader-x.y.z-x64.exe` — 安装包（可选安装目录、创建桌面快捷方式）
-- `VideoDownloader-Portable-x.y.z-x64.exe` — 便携版（免安装，双击即用）
+- `VideoDownloader-Setup-x.y.z-x64.exe` — Windows 安装包（可选安装目录、创建桌面快捷方式）
+- `VideoDownloader-Portable-x.y.z-x64.exe` — Windows 便携版（免安装，双击即用）
+- macOS（Apple Silicon dmg）与 Linux（x64/arm64 AppImage）打包目标已配置：在对应平台 `npm run dist:mac` / `dist:linux`
 
 开箱即用，无需安装 Node.js / Python，yt-dlp、ffmpeg、deno 全部内置。
 
@@ -49,10 +50,33 @@
 ```bash
 git clone https://github.com/SillyShalong/video-downloader.git
 cd video-downloader
-npm install          # 安装依赖（Electron / React / AntD）
-npm run setup        # 下载 yt-dlp / ffmpeg / deno 到 bin/
+npm install          # 安装依赖（Electron / React / AntD / Capacitor）
+npm run setup        # 按当前 系统/架构 下载 yt-dlp / ffmpeg / deno（Win/mac/Linux 通用）
 npm run build:web    # 构建前端
 npm start            # 启动桌面应用
+```
+
+## 📱 手机 / 平板（远程模式）
+
+Node 引擎无法跑在手机上，移动端为「**远程模式**」——操控局域网里的桌面服务（下载、清晰度、进度/速度、暂停终止全部可用，文件落在桌面机）：
+
+1. 桌面端执行：`node gui.mjs --lan`（打印手机可访问地址，如 `http://192.168.1.19:8321`）
+2. 手机任选其一：
+   - **浏览器直接打开**该地址（可添加到主屏幕当 PWA 用）
+   - **安卓 App**：本仓库 `android/` 为 Capacitor 工程（同一套 UI）。装好 Android Studio 后
+     `npx cap sync android && cd android && gradlew assembleDebug` 生成 APK；
+     App 内 ⚙ → 「远程模式 · 服务器地址」填桌面地址
+
+## 🖥 跨平台架构
+
+```
+同一份 core（src/）+ 同一套 UI（web/React）
+ ├ Windows / macOS / Linux → Electron 桌面应用
+ │   所有 OS 差异收敛在 src/platform.mjs：二进制命名 / 打开·定位文件 /
+ │   根目录枚举 / Chromium 发现（Edge/Chrome/Chromium）/ 进程树击杀
+ ├ 二进制（npm run setup 自动按 平台+架构 选取）：
+ │   yt-dlp 官方 · ffmpeg（Win=FFmpeg-Builds 全功能包，mac/Linux=ffmpeg-static 单文件）· deno
+ └ Android → Capacitor 壳 + 远程模式（服务端已开 CORS）
 ```
 
 ## 🚀 快速上手

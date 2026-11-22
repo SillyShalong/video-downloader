@@ -12,12 +12,13 @@ import { readFile, readdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { download, DEFAULT_OUT_DIR } from './downloader.mjs';
 import { matchSite, extractUrls } from './sites.mjs';
 import { loadConfig, saveConfig, isValidProxy } from './config.mjs';
 import { loadHistory, appendHistory } from './history.mjs';
+import { openCommand, revealCommand, listRoots } from './platform.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 前端为 Vite + React + AntD 构建（web/dist），npm run build:web 生成
@@ -36,9 +37,8 @@ const MIME = {
 };
 
 /**
- * 构建 explorer.exe 的参数。explorer 只认 /select,"路径" 格式（引号仅包路径）：
- * 路径含空格时若整段参数被引号包裹会解析失败、退化成打开默认视图。
- * （导出供测试校验命令行格式）
+ * Windows 下构建 explorer.exe 的参数（导出供测试校验命令行格式）。
+ * 跨平台行为见 src/platform.mjs 的 revealCommand/openCommand。
  */
 export function buildExplorerArgs(p, isDir) {
   const clean = String(p).replace(/"/g, '');
@@ -245,30 +245,21 @@ export function createApp(opts = {}) {
     return created;
   }
 
-  // 驱动器列表（Windows，PowerShell 查询一次后缓存）
-  let drivesCache = null;
-  function listDrives() {
-    if (drivesCache) return drivesCache;
-    try {
-      const r = spawnSync(
-        'powershell',
-        ['-NoProfile', '-Command', '(Get-PSDrive -PSProvider FileSystem).Root'],
-        { encoding: 'utf8', windowsHide: true, timeout: 8000 },
-      );
-      drivesCache = (r.stdout || '')
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter((s) => /^[A-Z]:\\?$/i.test(s));
-    } catch {}
-    if (!drivesCache || drivesCache.length === 0) drivesCache = ['C:\\'];
-    return drivesCache;
-  }
-
   const server = http.createServer(async (req, res) => {
     const send = (code, obj) => {
       res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(obj));
     };
+
+    // CORS：远程模式（手机 App / PWA）跨域访问桌面服务所必需
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
     try {
       // 静态资源（Vite 构建产物，非 /api 一律走这里；SPA 回退到 index.html）
@@ -410,7 +401,7 @@ export function createApp(opts = {}) {
             path: null,
             parent: null,
             home,
-            entries: [{ name: '主目录', path: home }, ...listDrives().map((d) => ({ name: d, path: d }))],
+            entries: listRoots(),
           });
           return;
         }
@@ -529,7 +520,7 @@ export function createApp(opts = {}) {
       }
 
       if (req.method === 'POST' && req.url === '/api/open') {
-        // 用系统默认程序打开文件（播放器/图片查看器等）
+        // 用系统默认程序打开文件（播放器/图片查看器等）——平台差异见 platform.mjs
         const body = await readJson(req);
         const p = String(body.path || '').replace(/"/g, '');
         if (!p || !existsSync(p)) {
@@ -540,9 +531,8 @@ export function createApp(opts = {}) {
           send(400, { error: '这是目录，请用「打开文件夹」' });
           return;
         }
-        // cmd /c start "" "路径"：start 首个引号参数是窗口标题占位，
-        // 空标题 + 引号包裹路径可正确处理空格/中文/emoji
-        spawn('cmd', ['/c', 'start', '', p], { detached: true, stdio: 'ignore' }).unref();
+        const c = openCommand(p);
+        spawn(c.file, c.args, { detached: true, stdio: 'ignore', windowsVerbatimArguments: c.verbatim }).unref();
         send(200, { ok: true });
         return;
       }
@@ -555,8 +545,8 @@ export function createApp(opts = {}) {
           return;
         }
         const isDir = statSync(p).isDirectory();
-        const [arg] = buildExplorerArgs(p, isDir);
-        spawn('explorer.exe', [arg], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+        const c = revealCommand(p, isDir);
+        spawn(c.file, c.args, { detached: true, stdio: 'ignore', windowsVerbatimArguments: c.verbatim }).unref();
         send(200, { ok: true });
         return;
       }

@@ -29,7 +29,7 @@ import {
   SettingOutlined,
   StopOutlined,
 } from '@ant-design/icons';
-import { api, midTrunc, SITE_LABEL, fmtSpeed, fmtBytes, fmtEta } from './api.js';
+import { api, midTrunc, SITE_LABEL, fmtSpeed, fmtBytes, fmtEta, serverBase } from './api.js';
 import logoUrl from './assets/logo.svg';
 
 const { Text, Paragraph } = Typography;
@@ -183,6 +183,7 @@ export default function App() {
   const [proxyInput, setProxyInput] = useState('');
   const [sessdataInput, setSessdataInput] = useState('');
   const [proxyStatus, setProxyStatus] = useState(null); // {ok, text}
+  const [serverAddr, setServerAddr] = useState(() => localStorage.getItem('vd.server') || '');
 
   const [tasks, setTasks] = useState(() => new Map());
   const [stats, setStats] = useState(null);
@@ -190,7 +191,7 @@ export default function App() {
   tasksRef.current = tasks;
 
   const refreshStats = useCallback(() => {
-    fetch('/api/stats').then((r) => r.json()).then(setStats).catch(() => {});
+    fetch(serverBase() + '/api/stats').then((r) => r.json()).then(setStats).catch(() => {});
   }, []);
   useEffect(() => { refreshStats(); }, [refreshStats]);
 
@@ -205,7 +206,7 @@ export default function App() {
       setSessdataInput(c.bilibiliSessdata || '');
     }).catch(() => {});
     api.getTasks().then((d) => setTasks(new Map(d.tasks.map((t) => [t.id, t])))).catch(() => {});
-    const es = new EventSource('/api/events');
+    const es = new EventSource(serverBase() + '/api/events');
     es.onmessage = (ev) => {
       const data = JSON.parse(ev.data);
       if (data.type === 'init') {
@@ -406,6 +407,29 @@ export default function App() {
               <Button id="sessdata-save" type="primary" onClick={saveSessdata}>保存</Button>
             </Flex>
             <Text type="secondary" className="note">获取：B 站网页版登录 → F12 → 应用 → Cookie → 复制 SESSDATA 的值。</Text>
+
+            <Text type="secondary" className="tag-label" style={{ marginTop: 8 }}>远程模式 · 服务器地址（手机/平板用）</Text>
+            <Flex gap={8} wrap="wrap">
+              <Input
+                id="server-input"
+                style={{ flex: 1, minWidth: 220 }}
+                placeholder="http://192.168.1.100:8321 （桌面端 node gui.mjs --lan 显示的地址）"
+                value={serverAddr}
+                onChange={(e) => setServerAddr(e.target.value)}
+              />
+              <Button
+                id="server-save"
+                type="primary"
+                onClick={() => {
+                  localStorage.setItem('vd.server', serverAddr.trim());
+                  message.success(serverAddr.trim() ? '已保存，页面即将刷新以连接服务器' : '已清除，回到本机模式');
+                  setTimeout(() => location.reload(), 800);
+                }}
+              >
+                保存
+              </Button>
+            </Flex>
+            <Text type="secondary" className="note">安卓 App / 手机浏览器（PWA）连桌面服务时填；桌面本机使用请留空。</Text>
           </Flex>
         </Card>
       </div>
