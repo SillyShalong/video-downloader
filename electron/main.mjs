@@ -3,6 +3,9 @@
 // ESM 静态 import 会在顶层代码执行前加载模块，config/downloader 顶层就要读这些变量
 import { app, BrowserWindow, dialog, shell } from 'electron';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // 打包版路径解耦：bin 在 resources/bin，配置/历史放用户数据目录，默认下载到系统下载夹
 if (app.isPackaged) {
@@ -50,6 +53,7 @@ async function main() {
     autoHideMenuBar: true,
     backgroundColor: '#0a0c11',
     title: 'Video Downloader',
+    icon: path.join(__dirname, '..', 'build', 'icon.ico'),
     show: false,
     webPreferences: {
       contextIsolation: true,

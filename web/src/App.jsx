@@ -28,6 +28,7 @@ import {
   SettingOutlined,
 } from '@ant-design/icons';
 import { api, midTrunc, SITE_LABEL } from './api.js';
+import logoUrl from './assets/logo.svg';
 
 const { Text, Paragraph } = Typography;
 
@@ -312,7 +313,7 @@ export default function App() {
       {/* 顶栏 */}
       <header>
         <div className="logo">
-          <DownloadOutlined />
+          <img src={logoUrl} alt="logo" />
         </div>
         <div className="ttl">
           <h1>Video Downloader <Tag className="ver">v0.4</Tag></h1>

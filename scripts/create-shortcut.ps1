@@ -8,7 +8,7 @@ $lnk = $ws.CreateShortcut((Join-Path $desktop 'Video Downloader.lnk'))
 $lnk.TargetPath = $electron
 $lnk.Arguments = '.'
 $lnk.WorkingDirectory = $project
-$lnk.IconLocation = "$electron,0"
-$lnk.Description = '视频下载器 (YouTube / 抖音)'
+$lnk.IconLocation = (Join-Path $project 'build\icon.ico')
+$lnk.Description = '视频下载器 (YouTube / 抖音 / B站 / 小红书)'
 $lnk.Save()
 Write-Output "已创建: $(Join-Path $desktop 'Video Downloader.lnk')"

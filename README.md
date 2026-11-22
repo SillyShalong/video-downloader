@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/icon.png" width="96" alt="Video Downloader" />
+
 # 🎬 Video Downloader
 
 **一个界面精致的视频下载工具 —— YouTube · 抖音 · 哔哩哔哩 · 小红书**
