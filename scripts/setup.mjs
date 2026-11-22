@@ -15,6 +15,8 @@ const BIN = path.join(ROOT, 'bin');
 const force = process.argv.includes('--force');
 
 const IS_WIN = process.platform === 'win32';
+// Windows 下显式用系统 bsdtar（支持 zip）；Git Bash 的 GNU tar 不支持 zip，会与 CI 行为不一致
+const TAR = IS_WIN ? 'C:\\Windows\\System32\\tar.exe' : 'tar';
 const IS_MAC = process.platform === 'darwin';
 
 /** 按平台/架构计算下载计划（导出供单元测试校验 URL 与产物名） */
@@ -110,7 +112,7 @@ if (!existsSync(ffmpegDest) || force) {
     downloadTo(ffmpeg.url, zip, 'ffmpeg（约 200MB）');
     console.log('解压 ffmpeg ...');
     // 用系统自带 tar 解压（原生支持 zip；Expand-Archive 在 CI 的 PS 上有参数绑定问题）
-    const r = spawnSync('tar', ['-xf', zip, '-C', path.join(tmp, 'out')], { stdio: 'inherit' });
+    const r = spawnSync(TAR, ['-xf', zip, '-C', path.join(tmp, 'out')], { stdio: 'inherit' });
     if (r.status !== 0) throw new Error('解压失败（tar 退出码 ' + r.status + '）');
     // zip 内层目录名带版本号（随上游构建变化），动态发现而非硬编码
     const src = findIn(path.join(tmp, 'out'), 'ffmpeg.exe', 3);
@@ -127,11 +129,14 @@ const denoDest = path.join(BIN, deno.file);
 if (!existsSync(denoDest) || force) {
   const tmp = path.join(ROOT, '.tmp', 'deno-zip');
   rmSync(tmp, { recursive: true, force: true });
-  mkdirSync(tmp, { recursive: true });
+  const outDir = path.join(tmp, 'out');
+  mkdirSync(outDir, { recursive: true });
   const zip = path.join(tmp, 'deno.zip');
   downloadTo(deno.url, zip, `deno (${process.platform}/${process.arch})`);
-  // zip 根即 deno(.exe)；Windows 下 tar 解 zip 会保留文件名，直接按产物名查找
-  const src = findIn(tmp, deno.file, 2);
+  console.log('解压 deno ...');
+  const r = spawnSync(TAR, ['-xf', zip, '-C', outDir], { stdio: 'inherit' });
+  if (r.status !== 0) throw new Error('deno 解压失败（tar 退出码 ' + r.status + '）');
+  const src = findIn(outDir, deno.file, 2);
   if (!src) throw new Error('deno 解压后未找到可执行文件');
   renameSync(src, denoDest);
   rmSync(tmp, { recursive: true, force: true });
