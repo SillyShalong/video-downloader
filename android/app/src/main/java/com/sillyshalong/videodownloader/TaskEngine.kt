@@ -222,28 +222,78 @@ class TaskEngine(private val ctx: Context) {
     private fun runTask(t: Task) {
         // 1) 解析：按站点分发到对应引擎（B站 / YouTube）
         t.stage = "解析中"; broadcast(t)
-        val info = when (t.site) {
-            "youtube" -> YouTubeEngine.extract(t.url, t.quality, t.audio)
-            else -> BiliEngine.extract(ctx, t.url, prefs.getString("sessdata", "") ?: "", t.quality)
+        val extraction = when (t.site) {
+            "youtube" -> {
+                val ex = YouTubeEngine.extract(t.url, t.quality, t.audio)
+                // YouTube 视频模式返回两路流，包装成单规格语义
+                if (ex.audioSpec != null) {
+                    val audioSpec = ex.audioSpec!!
+                    // 合并阶段的进度按 80%（下载两路）+ 20%（封装）折算
+                    val mergedSpec = DownloadSpec(
+                        title = audioSpec.title,
+                        fileName = audioSpec.fileName.replace(Regex("\\.apart$"), ".mp4"),
+                        urls = audioSpec.urls,
+                        totalBytes = audioSpec.totalBytes,
+                    )
+                    return runYouTubeTwoStream(t, ex.videoSpec, audioSpec, mergedSpec)
+                }
+                ex.title to ex.videoSpec
+            }
+            else -> {
+                val spec = BiliEngine.extract(ctx, t.url, prefs.getString("sessdata", "") ?: "", t.quality)
+                spec.title to spec
+            }
         }
-        t.title = info.title
+        val (title, spec) = extraction
+        t.title = title
         broadcast(t)
-        // 2) 下载（OkHttp → 系统下载目录）
-        t.stage = "下载中"; t.file = "Download/VideoDownloader/${info.fileName}"
+        downloadAndStore(t, spec, spec.fileName)
+    }
+
+    /** YouTube 双流：下载视频流 + 音频流 → MediaMuxer 封装 → MediaStore */
+    private fun runYouTubeTwoStream(t: Task, videoSpec: DownloadSpec, audioSpec: DownloadSpec, finalSpec: DownloadSpec) {
+        val cb = makeProgressCb(t)
+        t.stage = "下载视频流"; broadcast(t)
+        val vFile = HttpDownloader.downloadToCache(ctx, videoSpec, HttpDownloader.ProgressSpan(cb, 0.0, 0.6))
+        try {
+            t.stage = "下载音频流"; t.speed = null; broadcast(t)
+            val aFile = HttpDownloader.downloadToCache(ctx, audioSpec, HttpDownloader.ProgressSpan(cb, 0.6, 0.2))
+            try {
+                t.stage = "封装 MP4"; t.speed = null; t.eta = null; broadcast(t)
+                val name = finalSpec.fileName
+                val outFile = File(ctx.cacheDir, name)
+                Mp4Remuxer.mux(vFile, aFile, outFile)
+                val saved = MediaStoreSaver.saveFromCache(ctx, outFile, name)
+                outFile.delete()
+                t.file = saved.displayPath
+                t.sizeBytes = outFile.length()
+            } finally {
+                aFile.delete()
+            }
+        } finally {
+            vFile.delete()
+        }
+    }
+
+    /** 单流下载（B站 / YouTube 音频模式）：下载 → MediaStore */
+    private fun downloadAndStore(t: Task, spec: DownloadSpec, displayFile: String) {
+        t.stage = "下载中"; t.file = "Download/VideoDownloader/$displayFile"
         broadcast(t)
-        HttpDownloader.download(ctx, info, object : HttpDownloader.Progress {
-            override fun onProgress(percent: Double, downloaded: Long, total: Long, speed: Long, eta: Int) {
-                t.percent = percent; t.downloaded = downloaded; t.totalBytes = total
-                t.speed = speed; t.eta = eta
-                broadcastThrottled(t)
-            }
-            override fun onCancelled() {
-                // 让 runTask 以中止状态收尾
-                throw InterruptedException("cancelled")
-            }
-            override fun registerCancel(fn: () -> Unit) { currentCancel = fn }
-        })
-        t.sizeBytes = t.totalBytes
+        val cb = makeProgressCb(t)
+        val saved = HttpDownloader.download(ctx, spec, cb)
+        t.file = saved.displayPath
+        t.sizeBytes = saved.sizeBytes
+    }
+
+    /** 双流阶段的进度回调（总进度已在 ProgressSpan 内缩放） */
+    private fun makeProgressCb(t: Task): HttpDownloader.Progress = object : HttpDownloader.Progress {
+        override fun onProgress(percent: Double, downloaded: Long, total: Long, speed: Long, eta: Int) {
+            t.percent = percent; t.downloaded = downloaded; t.totalBytes = total
+            t.speed = speed; t.eta = eta
+            broadcastThrottled(t)
+        }
+        override fun onCancelled() { throw InterruptedException("cancelled") }
+        override fun registerCancel(fn: () -> Unit) { currentCancel = fn }
     }
 
     private var lastEmit = 0L
