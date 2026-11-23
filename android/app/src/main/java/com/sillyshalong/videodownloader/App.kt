@@ -9,8 +9,14 @@ import android.app.Application
 class App : Application() {
     lateinit var engine: TaskEngine
 
+    companion object {
+        lateinit var instance: App
+            private set
+    }
+
     override fun onCreate() {
         super.onCreate()
+        instance = this
         engine = TaskEngine(this)
         LocalServer.engine = engine
         LocalServer.start(this)

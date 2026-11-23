@@ -54,6 +54,10 @@ object YouTubeEngine {
             }
         }
         NewPipe.init(downloader, Localization("en", "US"), ContentCountry("US"))
+        // 注册 PO token 提供者：YouTube 2024+ 要求 BotGuard 完整性校验才返回视频流
+        org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor.setPoTokenProvider(
+            com.sillyshalong.videodownloader.potoken.PoTokenProviderImpl,
+        )
         initialized = true
     }
 
@@ -90,7 +94,8 @@ object YouTubeEngine {
             .sortedByDescending { it.height }
         val chosen = progressive.firstOrNull()
             ?: info.videoStreams.filter { !it.isVideoOnly && it.format?.name == "MPEG_4" }.minByOrNull { it.height }
-            ?: throw RuntimeException("YouTube: 未找到可用的渐进式视频流（360p/720p）")
+            ?: throw RuntimeException(
+                "YouTube 暂不支持手机独立下载（平台 SABR 协议迁移中，提取库尚未跟进），请走桌面端或远程模式")
         return DownloadSpec(
             title = title,
             fileName = "$title [${info.id}].mp4",
