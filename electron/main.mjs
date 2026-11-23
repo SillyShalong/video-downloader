@@ -18,6 +18,9 @@ let server = null;
 let mainWindow = null;
 let tray = null;
 
+// 通知/托盘标题用应用名而非 "Electron"：必须与 appId 一致，且在 whenReady 前设置
+app.setAppUserModelId('com.sillyshalong.videodownloader');
+
 // 单实例
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -96,7 +99,7 @@ async function main() {
       tray?.displayBalloon?.({
         iconType: 'info',
         title: 'Video Downloader',
-        content: '已最小化到托盘，下载任务继续。右键托盘图标退出。',
+        content: '已最小化到系统托盘，下载任务继续。从托盘图标右键可退出。',
       });
     }
   });

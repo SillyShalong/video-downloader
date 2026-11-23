@@ -24,7 +24,7 @@
     "dist:linux": "npm run build:web --silent && electron-builder --linux"
   },
   "build": {
-    "appId": "io.github.SillyShalong.video-downloader",
+    "appId": "com.sillyshalong.videodownloader",
     "productName": "Video Downloader",
     "directories": {
       "output": "release"
