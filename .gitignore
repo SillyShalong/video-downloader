@@ -17,3 +17,4 @@ android/app/.cxx/
 android/capacitor-cordova-android-plugins/build/
 *.keystore
 active-tasks.json
+.ref-np/
