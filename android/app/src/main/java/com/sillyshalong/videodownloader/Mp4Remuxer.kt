@@ -28,8 +28,16 @@ object Mp4Remuxer {
         var muxer: MediaMuxer? = null
         try {
             muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            val vDst = muxer.addTrack(v.format!!)
-            val aDst = muxer.addTrack(a.format!!)
+            val vDst = try {
+                muxer.addTrack(v.format!!)
+            } catch (e: Exception) {
+                throw RuntimeException("addTrack(video) 失败: " + v.format + " / " + e.message, e)
+            }
+            val aDst = try {
+                muxer.addTrack(a.format!!)
+            } catch (e: Exception) {
+                throw RuntimeException("addTrack(audio) 失败: " + a.format + " / " + e.message, e)
+            }
             muxer.start()
 
             val buf = ByteArray(v.maxSample.coerceAtLeast(a.maxSample).coerceAtLeast(64 * 1024))

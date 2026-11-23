@@ -35,7 +35,8 @@ object YouTubeEngine {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.MINUTES)
         .followRedirects(true)
         .build()
 
@@ -135,7 +136,25 @@ object YouTubeEngine {
         } catch (e: Exception) {
             println("[YT-diag2] 预检异常: " + e.message?.take(200))
         }
+        // 诊断：dump 提取器内部 visionOS player 响应的流列表（与桌面 JVM 成功路径对比）
+        try {
+            val cc0 = ContentCountry("US")
+            val loc0 = Localization("en", "US")
+            val cpn0 = YoutubeParsingHelper.generateContentPlaybackNonce()
+            val vid = Regex("v=([A-Za-z0-9_-]{11})").find(url)?.groupValues?.get(1)
+                ?: Regex("youtu[.]be/([A-Za-z0-9_-]{11})").find(url)?.groupValues?.get(1) ?: "?"
+            val raw0 = org.schabi.newpipe.extractor.services.youtube.YoutubeStreamHelper
+                .getVisionOsPlayerResponse(cc0, loc0, vid, cpn0)
+            val sd0 = raw0.getObject("streamingData")
+            println("[YT-diag] visionOS formats=" + (sd0?.getArray("formats")?.size ?: 0) +
+                " adaptive=" + (sd0?.getArray("adaptiveFormats")?.size ?: 0))
+        } catch (e: Exception) {
+            println("[YT-diag] visionOS 预检失败: " + e.message?.take(300))
+        }
         val info = StreamInfo.getInfo(ServiceList.YouTube, url)
+        println("[YT-diag] StreamInfo: video=" + info.videoStreams.size +
+            " videoOnly=" + info.videoOnlyStreams.size + " audio=" + info.audioStreams.size +
+            " errors=" + info.errors.size)
         // 主动试一次 n 参数解码：库在 Android 上初始化 JS 引擎失败时异常会在这里暴露
         try {
             org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
@@ -171,16 +190,18 @@ object YouTubeEngine {
             )
         }
 
-        // 视频：优先 H.264 纯视频流（itag 137/136/135/134 等，有 codec 元数据），
-        // 因为 MediaMuxer 封装 MP4 时 H.264+AAC 兼容性最好
-        val video = pickBestVideo(info.videoStreams, maxHeight)
+        // 视频：现代 YouTube 只提供音视频分离流（adaptiveFormats），H.264 纯视频
+        // 在 videoOnlyStreams 里；合一的 progressive 流（videoStreams）仅老视频 360p 有
+        val video = pickBestVideo(info.videoOnlyStreams + info.videoStreams, maxHeight)
             ?: throw RuntimeException(
-                "YouTube: 未找到可用视频流（共 ${info.videoStreams.size} 条: " +
-                    info.videoStreams.joinToString("; ") { "${it.height}p/" + (it.itagItem?.codec ?: it.format?.name ?: "?") } +
-                    "，上限 ${maxHeight}p）",
+                "YouTube: 未找到可用视频流（共 ${info.videoOnlyStreams.size + info.videoStreams.size} 条候选）",
             )
         val audio = pickBestAudio(info.audioStreams)
-            ?: throw RuntimeException("YouTube: 未找到音频流（无法合成 MP4）")
+            ?: throw RuntimeException(
+                "YouTube: 未找到 AAC 音频流（候选: " +
+                    info.audioStreams.joinToString(", ") { it.format?.name + "@" + it.averageBitrate } +
+                    "）——无法合成 MP4",
+            )
 
         val vSpec = DownloadSpec(
             title = title,
@@ -199,11 +220,11 @@ object YouTubeEngine {
 
     /* ---------------- 选流 ---------------- */
 
-    private fun isAac(s: AudioStream) = s.format?.name == "M4A"
+    private fun isAac(s: AudioStream) = s.format == org.schabi.newpipe.extractor.MediaFormat.M4A
 
     private fun pickBestAudio(streams: List<AudioStream>): AudioStream? =
         streams.filter { isAac(it) }.maxByOrNull { it.averageBitrate }
-            ?: streams.maxByOrNull { it.averageBitrate }
+        // 注意：不能 fallback 到 Opus/WebM——MediaMuxer 无法把 Opus 封进 MP4
 
     private fun pickBestVideo(streams: List<VideoStream>, maxHeight: Int): VideoStream? {
         // codec 信息在 ItagItem.codec（如 avc1.640028）；拿不到 codec 时按 itag 表兜底判断
@@ -211,14 +232,20 @@ object YouTubeEngine {
             val codec = v.itagItem?.codec ?: ""
             return codec.startsWith("avc1") || codec.startsWith("avc3")
         }
+        // 竖屏视频 height 是长边（1080x1920 → h=1920），清晰度档位以短边为准
+        fun shortSide(v: VideoStream): Int {
+            val w = v.itagItem?.width ?: 0
+            return minOf(w, v.height).takeIf { it > 0 } ?: v.height
+        }
         val h264 = streams
-            .filter { it.height > 0 && it.height <= maxHeight && isH264(it) }
-            .maxByOrNull { it.height }
+            .filter { isH264(it) }
+            .filter { val ss = shortSide(it); ss > 0 && ss <= maxHeight }
+            .maxByOrNull { shortSide(it) }
         if (h264 != null) return h264
         // 无 H.264：选不超过上限的最低清晰度（其他编码 MediaMuxer 可能不支持，宁小勿黑）
         return streams
-            .filter { it.height > 0 && it.height <= maxHeight }
-            .minByOrNull { it.height }
+            .filter { val ss = shortSide(it); ss > 0 && ss <= maxHeight }
+            .minByOrNull { shortSide(it) }
     }
 
     private fun tempPart(stream: VideoStream, title: String, id: String): String =

@@ -67,57 +67,68 @@ object HttpDownloader {
         cb.registerCancel { cancelled.set(true) }
         var lastErr: Exception? = null
         for (url in info.urls) {
-            try {
-                val req = Request.Builder().url(url)
-                    .header("User-Agent", DESKTOP_UA)
-                    .header("Referer", "https://www.bilibili.com/")
-                    .build()
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}")
-                    val body = resp.body ?: throw RuntimeException("空响应")
-                    val total = if (body.contentLength() > 0) body.contentLength() else info.totalBytes
-                    val tmp = File.createTempFile("vd-", ".part", ctx.cacheDir)
-                    var done = 0L
-                    var speed = 0L
-                    var winBytes = 0L
-                    var lastTick = System.currentTimeMillis()
-                    val buf = ByteArray(64 * 1024)
-                    tmp.outputStream().use { o ->
-                        while (true) {
-                            if (cancelled.get()) throw InterruptedException()
-                            val n = body.byteStream().read(buf)
-                            if (n < 0) break
-                            o.write(buf, 0, n)
-                            done += n
-                            winBytes += n
-                            val now = System.currentTimeMillis()
-                            val dt = (now - lastTick) / 1000.0
-                            if (dt >= 0.4) {
-                                val inst = (winBytes / dt).toLong()
-                                speed = if (speed > 0) speed / 2 + inst / 2 else inst
-                                winBytes = 0
-                                lastTick = now
-                            }
-                            val pct = if (total > 0) done.toDouble() / total * 100 else -1.0
-                            val eta = if (total > 0 && speed > 0) ((total - done) / speed).toInt() else -1
-                            cb.onProgress(pct, done, total, speed, eta)
-                        }
-                    }
-                    return tmp
-                }
-            } catch (e: InterruptedException) {
-                cb.onCancelled()
-                throw e
-            } catch (e: Exception) {
-                lastErr = e
+            var attempt = 0
+            while (attempt < 3) {
+                attempt++
+                try {
+                    return downloadToCacheOnce(ctx, info, url, cancelled, cb)
+                } catch (e: InterruptedException) { throw e }
+                catch (e: Exception) { lastErr = e }
             }
         }
-        throw RuntimeException("下载失败: ${lastErr?.message}")
+        throw RuntimeException("下载失败（重试 3 次）: ${lastErr?.message}")
+    }
+
+    private fun downloadToCacheOnce(
+        ctx: Context,
+        info: DownloadSpec,
+        url: String,
+        cancelled: AtomicBoolean,
+        cb: Progress,
+    ): File {
+        val req = Request.Builder().url(url)
+            .header("User-Agent", DESKTOP_UA)
+            .header("Referer", "https://www.bilibili.com/")
+            .build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}")
+            val body = resp.body ?: throw RuntimeException("空响应")
+            val total = if (body.contentLength() > 0) body.contentLength() else info.totalBytes
+            val tmp = File.createTempFile("vd-", ".part", ctx.cacheDir)
+            var done = 0L
+            var speed = 0L
+            var winBytes = 0L
+            var lastTick = System.currentTimeMillis()
+            val buf = ByteArray(64 * 1024)
+            tmp.outputStream().use { o ->
+                while (true) {
+                    if (cancelled.get()) throw InterruptedException()
+                    val n = body.byteStream().read(buf)
+                    if (n < 0) break
+                    o.write(buf, 0, n)
+                    done += n
+                    winBytes += n
+                    val now = System.currentTimeMillis()
+                    val dt = (now - lastTick) / 1000.0
+                    if (dt >= 0.4) {
+                        val inst = (winBytes / dt).toLong()
+                        speed = if (speed > 0) speed / 2 + inst / 2 else inst
+                        winBytes = 0
+                        lastTick = now
+                    }
+                    val pct = if (total > 0) done.toDouble() / total * 100 else -1.0
+                    val eta = if (total > 0 && speed > 0) ((total - done) / speed).toInt() else -1
+                    cb.onProgress(pct, done, total, speed, eta)
+                }
+            }
+            return tmp
+        }
     }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.MINUTES)
         .build()
 
     private fun doDownloadOne(
@@ -129,7 +140,8 @@ object HttpDownloader {
     ): Saved {
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.MINUTES)
             .build()
         val req = Request.Builder().url(url)
             .header("User-Agent", DESKTOP_UA)
