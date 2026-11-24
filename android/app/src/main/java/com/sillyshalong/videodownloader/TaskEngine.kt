@@ -91,6 +91,7 @@ class TaskEngine(private val ctx: Context) {
     fun getConfig(): JSONObject = JSONObject().apply {
         put("proxy", "")
         put("bilibiliSessdata", prefs.getString("sessdata", "") ?: "")
+        put("hlsSites", org.json.JSONArray(prefs.getString("hlsSites", "[]")))
     }
 
     fun saveConfig(key: String, value: String) {
@@ -123,7 +124,7 @@ class TaskEngine(private val ctx: Context) {
         return JSONObject().put("urls", urls)
     }
 
-    /** 站点识别（独立模式仅 B站 全功能） */
+    /** 站点识别（独立模式：B站 / YouTube 全功能；hlsSites 域名走通用 HLS 引擎） */
     private fun siteOf(url: String): String {
         val u = try { java.net.URI(url) } catch (_: Exception) { return "generic" }
         val host = (u.host ?: "").lowercase()
@@ -132,9 +133,17 @@ class TaskEngine(private val ctx: Context) {
             host.endsWith("douyin.com") -> "douyin"
             host.endsWith("xiaohongshu.com") || host.endsWith("xhslink.com") -> "xiaohongshu"
             host.endsWith("youtube.com") || host.endsWith("youtu.be") -> "youtube"
+            hlsSites().any { host == it || host.endsWith(".$it") } -> "hls"
             else -> "generic"
         }
     }
+
+    /** config SharedPreferences 里的 hlsSites（JSON 数组字符串，与桌面 config.json 同义） */
+    private fun hlsSites(): List<String> = try {
+        val raw = prefs.getString("hlsSites", "[]") ?: "[]"
+        val arr = org.json.JSONArray(raw)
+        (0 until arr.length()).map { arr.getString(it) }
+    } catch (_: Exception) { emptyList() }
 
     fun submit(input: String, quality: String?, audio: Boolean): List<Task> {
         val urls = parseInput(input).getJSONArray("urls")
@@ -142,8 +151,8 @@ class TaskEngine(private val ctx: Context) {
         for (i in 0 until urls.length()) {
             val u = urls.getJSONObject(i).getString("url")
             val site = urls.getJSONObject(i).getString("site")
-            // 独立模式支持：B站 / YouTube。其余站点明确失败并指引走桌面端
-            if (site != "bilibili" && site != "youtube") {
+            // 独立模式支持：B站 / YouTube / hlsSites 域名（通用 HLS 引擎）。其余明确失败并指引走桌面端
+            if (site != "bilibili" && site != "youtube" && site != "hls") {
                 val t = Task(newId(), u, site, status = "error", error = "手机独立模式暂不支持该站点（抖音/小红书等需桌面端）；B站/YouTube 可直接下载")
                 t.stage = ""
                 tasks[t.id] = t; broadcast(t); created.add(t)
@@ -220,8 +229,15 @@ class TaskEngine(private val ctx: Context) {
     }
 
     private fun runTask(t: Task) {
-        // 1) 解析：按站点分发到对应引擎（B站 / YouTube）
+        // 1) 解析：按站点分发到对应引擎（B站 / YouTube / 通用 HLS）
         t.stage = "解析中"; broadcast(t)
+
+        // 通用 HLS：解析出 m3u8 后走专用分段下载（不走 downloadAndStore）
+        if (t.site == "hls") {
+            runHlsTask(t)
+            return
+        }
+
         val extraction = when (t.site) {
             "youtube" -> {
                 val ex = YouTubeEngine.extract(t.url, t.quality, t.audio)
@@ -248,6 +264,37 @@ class TaskEngine(private val ctx: Context) {
         t.title = title
         broadcast(t)
         downloadAndStore(t, spec, spec.fileName)
+    }
+
+    /** 通用 HLS 任务：WebView 过 CF 取 m3u8 → HlsDownloader 分段下载 → MediaStore */
+    private fun runHlsTask(t: Task) {
+        t.stage = "页面解析中（Cloudflare）"; broadcast(t)
+        val r = HlsEngine.extract(ctx, t.url)
+        t.title = r.title
+        t.file = "Download/VideoDownloader/${r.title}.ts"
+        broadcast(t)
+
+        t.stage = "下载 HLS 分段"; broadcast(t)
+        val out = File.createTempFile("hls-", ".ts", ctx.cacheDir)
+        val cb = makeProgressCb(t)
+        HlsDownloader.download(ctx, listOf(r.m3u8Url), r.referer, out, object : HlsDownloader.Progress {
+            override fun onProgress(percent: Double, done: Int, total: Int, speed: Long, eta: Int) {
+                t.percent = percent
+                t.downloaded = done.toLong()
+                t.totalBytes = total.toLong()
+                t.speed = speed
+                t.eta = eta
+                broadcastThrottled(t)
+            }
+            override fun onCancelled() { throw InterruptedException("cancelled") }
+            override fun registerCancel(fn: () -> Unit) { currentCancel = fn }
+        })
+
+        t.stage = "落盘"; broadcast(t)
+        val saved = MediaStoreSaver.saveFromCache(ctx, out, "${r.title}.ts")
+        out.delete()
+        t.file = saved.displayPath
+        t.sizeBytes = out.length().takeIf { it > 0 } ?: t.totalBytes
     }
 
     /** YouTube 双流：下载视频流 + 音频流 → MediaMuxer 封装 → MediaStore */

@@ -141,6 +141,10 @@ class LocalServer private constructor(port: Int, private val ctx: Context) : Nan
                         }
                         e.saveConfig("sessdata", v)
                     }
+                    if (b.has("hlsSites")) {
+                        // JSON 数组字符串形式存入 SharedPreferences（与 TaskEngine.hlsSites() 对应）
+                        e.saveConfig("hlsSites", b.optJSONArray("hlsSites")?.toString() ?: "[]")
+                    }
                     json(JSONObject().put("ok", true))
                 }
 
