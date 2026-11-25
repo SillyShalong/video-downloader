@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 
@@ -120,9 +120,9 @@ test('GUI: 目录弹窗可导航并确认回填', { skip: !browser }, async () =
   await page.click('.dm-item:has-text("主目录")');
   await page.waitForFunction(() => document.getElementById('dm-path').textContent.includes('Users'));
   assert.ok((await page.locator('.dm-item').count()) > 0, '主目录下应有目录项');
-  // 上级按钮：C:\Users\lijialun → C:\Users（上级仍含 "Users"，断言用用户名）
+  // 上级按钮：C:\Users\<当前用户> → C:\Users（上级仍含 "Users"，断言用当前系统用户名）
   await page.click('#dm-up');
-  await page.waitForFunction(() => !document.getElementById('dm-path').textContent.includes('lijialun'));
+  await page.waitForFunction((user) => !document.getElementById('dm-path').textContent.includes(user), userInfo().username);
   // 🏠 主目录按钮回到 home 再确认
   await page.click('#dm-home');
   await page.waitForFunction(() => document.getElementById('dm-path').textContent.includes('Users'));

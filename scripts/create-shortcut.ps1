@@ -1,6 +1,7 @@
 # 创建桌面快捷方式：Video Downloader
 $desktop = [Environment]::GetFolderPath('Desktop')
-$project = 'C:\Users\lijialun\opt\video-downloader'
+# 项目目录 = 本脚本的上一级（脚本放在 scripts\ 下），不依赖个人路径
+$project = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $electron = Join-Path $project 'node_modules\electron\dist\electron.exe'
 
 $ws = New-Object -ComObject WScript.Shell
