@@ -133,7 +133,9 @@ function check(c) {
 
 /* ------------------------------------------------------------------ 主流程 */
 try {
-  if (!existsSync(FFMPEG)) throw new Error(`找不到 ffmpeg: ${FFMPEG}（可用环境变量 FFMPEG 指定）`);
+  // FFMPEG 可能只是 PATH 里的命令名（CI 上就是），这时 existsSync 没有意义：实际跑一下看能不能起来
+  const ffmpegOk = path.isAbsolute(FFMPEG) ? existsSync(FFMPEG) : spawnSync(FFMPEG, ['-version'], { windowsHide: true }).status === 0;
+  if (!ffmpegOk) throw new Error(`找不到 ffmpeg: ${FFMPEG}（可用环境变量 FFMPEG 指定）`);
   const cases = generate();
   remuxWithOurMuxer();
   for (const c of cases) {
