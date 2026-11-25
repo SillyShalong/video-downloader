@@ -23,6 +23,18 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    testOptions {
+        // JVM 单测可以用 -PvdFixtures=<目录> 或环境变量 VD_FIXTURES=<目录> 传入真实媒体文件目录
+        // （MP4 重封装校验，见 tests/android-media-check.mjs），不传则跳过该用例
+        unitTests.all { test ->
+            def fixtures = project.findProperty("vdFixtures") ?: System.getenv("VD_FIXTURES") ?: ""
+            test.systemProperty "vd.fixtures", fixtures
+            // 环境变量不算任务输入：传了 fixtures 就总是重跑，免得 Gradle 判定「输入没变」而跳过
+            if (fixtures) test.outputs.upToDateWhen { false }
+        }
+        // JVM 单测里碰到 android.util.Log 之类的调用时返回默认值（不抛「not mocked」）
+        unitTests.returnDefaultValues = true
+    }
 }
 
 repositories {
@@ -36,14 +48,10 @@ dependencies {
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation 'org.nanohttpd:nanohttpd:2.3.1'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
-    implementation 'org.mozilla:rhino:1.8.1'
+    // YouTube 取流：上游库自带的依赖（jsoup / nanojson / rhino）由它的 POM 声明，这里不用重复写
     implementation 'com.github.TeamNewPipe:NewPipeExtractor:v0.27.1'
-    implementation 'com.github.TeamNewPipe:nanojson:e9d656ddb49a412a5a0a5d5ef20ca7ef09549996'
-    implementation 'com.squareup.okio:okio:3.9.0'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
-    implementation 'io.reactivex.rxjava3:rxjava:3.1.8'
-    implementation 'io.reactivex.rxjava3:rxandroid:3.0.2'
-    implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'org.mozilla:rhino:1.8.1'
+    implementation "androidx.webkit:webkit:$androidxWebkitVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')

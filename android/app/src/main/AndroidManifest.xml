@@ -22,6 +22,14 @@
             </intent-filter>
         </activity>
 
+        <!-- 系统文件夹选择器的透明宿主（“保存到 → 浏览…”） -->
+        <activity
+            android:name=".DirPickerActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:theme="@style/DirPickerTheme" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -54,6 +54,7 @@ const SITE_TAG_COLOR = {
   douyin: 'geekblue',
   bilibili: 'magenta',
   xiaohongshu: 'volcano',
+  'hls-generic': 'purple',
   generic: 'default',
 };
 
@@ -133,7 +134,7 @@ function DetailDrawer({ task, onClose, onRetry, onOpen, onReveal, onDelete }) {
   const pct = task.percent > 0 ? Math.min(100, task.percent) : 0;
   const qLabel = task.audio ? 'MP3' : task.quality ? task.quality + 'P' : '最佳';
   return (
-    <Drawer title={task.title || task.url} open={!!task} onClose={onClose} width={420}>
+    <Drawer title={task.title || task.url} open={!!task} onClose={onClose} width="min(420px, 100vw)">
       <Flex vertical gap={12}>
         <Flex gap={8} align="center">
           <span className={`tsi ${task.status}`}>{STATUS_ICON[task.status]}</span>
@@ -215,6 +216,9 @@ export default function App() {
   const [audio, setAudio] = useState(false);
   const [audioDisabled, setAudioDisabled] = useState(false);
   const [outdir, setOutdir] = useState(() => localStorage.getItem('vd.outdir') || '');
+  const [outdirLabel, setOutdirLabel] = useState(''); // 安卓：所选目录的显示名（存的是 content:// 地址，直接显示没法看）
+  const [platform, setPlatform] = useState('desktop'); // desktop | android（来自 /api/config）
+  const isAndroid = platform === 'android';
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [proxyInput, setProxyInput] = useState('');
@@ -265,11 +269,14 @@ export default function App() {
   /* ---- 初始化：配置 + 任务快照 + SSE ---- */
   useEffect(() => {
     api.getConfig().then((c) => {
+      setPlatform(c.platform || 'desktop');
       setProxyInput(c.proxy || '');
       setSessdataInput(c.bilibiliSessdata || '');
       const sites = c.hlsSites || [];
       setHlsInput(sites.join('\n'));
       setHlsSitesCount(sites.length);
+      // 当前保存目录就是上次选过的目录时，带上它的显示名
+      setOutdirLabel(c.outDir && c.outDir === localStorage.getItem('vd.outdir') ? c.outDirLabel || '' : '');
     }).catch(() => {});
     api.getTasks().then((d) => setTasks(new Map(d.tasks.map((t) => [t.id, t])))).catch(() => {});
     const es = new EventSource(serverBase() + '/api/events');
@@ -302,9 +309,11 @@ export default function App() {
         .then((r) => {
           setConnError(null);
           setParsed(r);
-          const hasDouyin = (r.urls || []).some((u) => u.site === 'douyin');
-          setAudioDisabled(hasDouyin);
-          if (hasDouyin) setAudio(false);
+          const sites = (r.urls || []).map((u) => u.site);
+          // 抖音没有独立音轨；安卓上「仅音频」只有 YouTube 支持（保存为 m4a）
+          const unsupported = sites.includes('douyin') || (isAndroid && sites.length > 0 && sites.some((s) => s !== 'youtube'));
+          setAudioDisabled(unsupported);
+          if (unsupported) setAudio(false);
         })
         .catch(() => {
           // 请求失败 ≠ 未识别到链接：给出可行动的提示
@@ -313,13 +322,13 @@ export default function App() {
         });
     }, 350);
     return () => clearTimeout(timer);
-  }, [inputText]);
+  }, [inputText, isAndroid]);
 
   /* ---- 提交下载 ---- */
   const submit = async () => {
     const text = inputText.trim();
     if (!text) {
-      message.warning('请先粘贴链接');
+      message.warning(t('pleasePaste'));
       return;
     }
     const od = outdir.trim() || null;
@@ -333,6 +342,9 @@ export default function App() {
         return; // 弹窗等用户确认
       }
       await doDownload(text, od, null);
+    } catch (e) {
+      // 任何一步失败都要让用户看见原因，不能点了没反应
+      message.error(t('addTaskFailed', { v: e.message || '未知错误' }));
     } finally {
       setSubmitting(false);
     }
@@ -340,25 +352,31 @@ export default function App() {
 
   const doDownload = async (text, od, items) => {
     const r = await api.download({ input: text, quality: quality || null, audio, outDir: od, playlistItems: items });
-    if (r.error) message.error(r.error);
-    else {
-      message.success(`已添加 ${r.tasks.length} 个下载任务${items ? `（选中 ${items.length} 集）` : ''}`);
-      setInputText('');
-      setParsed({ urls: [] });
-      setSelection(null);
+    if (r.error) {
+      message.error(r.error);
+      return false;
     }
+    message.success(
+      items ? t('taskAddedItems', { n: r.tasks.length, m: items.length }) : t('taskAdded', { n: r.tasks.length }),
+    );
+    setInputText('');
+    setParsed({ urls: [] });
+    setSelection(null);
+    return true;
   };
 
   const confirmSelection = async () => {
     if (!selection) return;
     const items = selection.entries.filter((_, i) => selection.checked[i]).map((e) => e.index);
     if (items.length === 0) {
-      message.warning('请至少选择一个视频');
+      message.warning(t('pleaseSelect'));
       return;
     }
     setSubmitting(true);
     try {
       await doDownload(selection.input, selection.outDir, items);
+    } catch (e) {
+      message.error(t('addTaskFailed', { v: e.message || '未知错误' }));
     } finally {
       setSubmitting(false);
     }
@@ -405,7 +423,7 @@ export default function App() {
   const browse = async () => {
     let r;
     try {
-      r = await api.pickDir();
+      r = await api.pickDir(outdir.trim());
     } catch (e) {
       message.error('打开目录选择失败: ' + e.message);
       return;
@@ -413,10 +431,11 @@ export default function App() {
     if (r.native) {
       if (r.path) {
         setOutdir(r.path);
+        setOutdirLabel(r.label || '');
         localStorage.setItem('vd.outdir', r.path);
-        message.success('已选择目录');
+        message.success(r.label ? t('dirChosen', { v: r.label }) : t('dirSelected'));
       }
-      return;
+      return; // 取消选择：保持原样
     }
     setDmOpen(true);
     const cur = outdir.trim();
@@ -425,13 +444,14 @@ export default function App() {
 
   const dmConfirm = () => {
     if (!dm.path) {
-      message.warning('请先进入一个目录');
+      message.warning(t('pleaseEnter'));
       return;
     }
     setOutdir(dm.path);
+    setOutdirLabel('');
     localStorage.setItem('vd.outdir', dm.path);
     setDmOpen(false);
-    message.success('已选择: ' + dm.path);
+    message.success(t('dirSelectedPath', { v: dm.path }));
   };
 
   /* ---- 设置 ---- */
@@ -486,8 +506,10 @@ export default function App() {
           <img src={logoUrl} alt="logo" />
         </div>
         <div className="ttl">
-          <h1>Video Downloader <Tag className="ver">v1.9.0</Tag></h1>
-          <div className="sub">YouTube · 抖音 · B站 · 小红书 · 更多站点</div>
+          <h1>Video Downloader <Tag className="ver">v1.10.0</Tag></h1>
+          <div className="sub">
+            {isAndroid ? t('subtitleAndroid') : t('subtitle')}
+          </div>
         </div>
         <Button
           id="gear"
@@ -518,7 +540,7 @@ export default function App() {
             <div id="proxy-status" className={proxyStatus ? (proxyStatus.ok ? 'ok' : 'bad') : ''}>
               {proxyStatus?.text}
             </div>
-            <Text type="secondary" className="note">仅对 YouTube 等 yt-dlp 站点生效；抖音/小红书为国内直连。留空即不使用代理。</Text>
+            <Text type="secondary" className="note">{isAndroid ? t('androidProxyNote') : t('proxyNote')}</Text>
 
             <Text type="secondary" className="tag-label" style={{ marginTop: 8 }}>哔哩哔哩 登录（SESSDATA，可选）</Text>
             <Flex gap={8} wrap="wrap">
@@ -604,7 +626,7 @@ export default function App() {
         <Input.TextArea
           id="input"
           rows={3}
-          placeholder={'粘贴视频链接，或整段抖音/小红书分享口令（自动识别其中的链接）\n支持一次粘贴多条，Ctrl+Enter 快速开始'}
+          placeholder={isAndroid ? t('androidPlaceholder') : t('inputPlaceholder')}
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
           onKeyDown={(e) => {
@@ -648,18 +670,22 @@ export default function App() {
                 onChange={setAudio}
               />
               <span>{t('audioOnly')}</span>
-              <Text type="secondary" style={{ fontSize: 11 }}>mp3</Text>
+              <Text type="secondary" style={{ fontSize: 11 }}>{isAndroid ? 'm4a' : 'mp3'}</Text>
             </Flex>
           </Flex>
 
           <Flex vertical gap={7} style={{ flex: 1, minWidth: 230 }}>
             <Text type="secondary" className="tag-label">{t('saveTo')}</Text>
-            <Flex gap={8}>
+            <Flex gap={8} wrap="wrap">
               <Input
                 id="outdir"
-                placeholder="downloads/"
-                value={outdir}
+                // 窄屏（手机）上让目录框独占一行，按钮换到下一行，免得目录名被挤得看不全
+                style={{ flex: 1, minWidth: isAndroid ? '100%' : 120 }}
+                placeholder={isAndroid ? t('androidDefaultDir') : 'downloads/'}
+                // 安卓上保存目录是 content:// 地址，直接显示没法看：显示目录名，地址放在 title 里
+                value={isAndroid ? outdirLabel : outdir}
                 title={outdir}
+                readOnly={isAndroid}
                 onChange={(e) => {
                   setOutdir(e.target.value);
                   localStorage.setItem('vd.outdir', e.target.value.trim());
@@ -670,11 +696,12 @@ export default function App() {
                 id="dir-reset"
                 onClick={() => {
                   setOutdir('');
+                  setOutdirLabel('');
                   localStorage.removeItem('vd.outdir');
-                  message.success('已恢复默认目录 downloads/');
+                  message.success(isAndroid ? `已恢复默认目录 ${t('androidDefaultDir')}` : t('dirReset'));
                 }}
               >
-                重置
+                {t('reset')}
               </Button>
             </Flex>
           </Flex>
@@ -697,7 +724,10 @@ export default function App() {
       </div>
       {taskList.length === 0 ? (
         <div className="empty">
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<>还没有任务 —— 粘贴链接，按 <Text keyboard>Ctrl</Text>+<Text keyboard>Enter</Text> 快速开始</>} />
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={isAndroid ? t('androidNoTasks') : <>{t('noTasksPre')}<Text keyboard>Ctrl</Text>+<Text keyboard>Enter</Text>{t('noTasksPost')}</>}
+          />
         </div>
       ) : (
         <div className="tlist">
@@ -718,8 +748,13 @@ export default function App() {
       />
 
       <footer>
-        CLI 方式同样可用：<code>node cli.mjs &lt;链接/口令&gt; [-q 1080] [--audio] [-o 目录]</code>
-        <br />下载文件统一优先 H.264 编码，保证系统播放器可直接播放
+        {!isAndroid && (
+          <>
+            {t('cliHint')}<code>node cli.mjs &lt;链接/口令&gt; [-q 1080] [--audio] [-o 目录]</code>
+            <br />
+          </>
+        )}
+        {isAndroid ? t('androidFooterNote') : t('footerNote')}
       </footer>
 
       {/* 多视频源选择弹窗 */}
@@ -759,7 +794,8 @@ export default function App() {
                 ]}
               >
                 <List.Item.Meta
-                  title={<Text ellipsis style={{ maxWidth: 420 }}>{item.title}</Text>}
+                  // maxWidth 只能用百分比：写死像素的话，手机上长标题会把弹窗（连同整页）撑宽，页面跟着缩放跳动
+                  title={<Text ellipsis style={{ maxWidth: '100%' }}>{item.title}</Text>}
                   description={`#${item.index}${item.duration ? ` · ${fmtEta(item.duration)}` : ''}`}
                 />
               </List.Item>

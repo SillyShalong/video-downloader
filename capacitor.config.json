@@ -5,5 +5,12 @@
   "server": {
     "url": "http://127.0.0.1:8977",
     "cleartext": true
+  },
+  "backgroundColor": "#0a0c11",
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "native",
+      "style": "DARK"
+    }
   }
 }

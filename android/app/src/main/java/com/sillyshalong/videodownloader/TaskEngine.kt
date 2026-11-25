@@ -1,375 +1,765 @@
 package com.sillyshalong.videodownloader
 
+import android.app.DownloadManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.util.Log
+import androidx.core.content.FileProvider
+import fi.iki.elonen.NanoHTTPD
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
-/** 单个下载任务（与桌面端 publicTask 字段对齐，前端零改动） */
+/** 多视频源（播放列表 / 多 P）里的一集 */
+class Episode(val url: String, val title: String, val duration: Long)
+
+/** 单个下载任务（对外字段与桌面端 publicTask 对齐，前端零改动复用） */
 class Task(
     val id: String,
     val url: String,
     val site: String,
-    var status: String = "queued", // queued|running|done|error|paused|cancelled
-    var percent: Double = 0.0,
-    var stage: String = "排队中",
-    var title: String? = null,
-    var file: String? = null,
-    var error: String? = null,
-    var speed: Long? = null,
-    var eta: Int? = null,
-    var downloaded: Long? = null,
-    var totalBytes: Long? = null,
-    var sizeBytes: Long? = null,
     val quality: String? = null,
     val audio: Boolean = false,
-    val log: MutableList<String> = mutableListOf(),
+    val playlistItems: List<Int>? = null,
+    /** 用户所选目录的树 URI（content://…）；null = 默认下载目录 */
+    val outDir: String? = null,
     var createdAt: Long = System.currentTimeMillis(),
 ) {
-    fun toJson(): JSONObject = JSONObject().apply {
-        put("id", id); put("url", url); put("site", site); put("status", status)
-        put("percent", percent); put("stage", stage)
-        put("title", title ?: JSONObject.NULL); put("file", file ?: JSONObject.NULL)
-        put("error", error ?: JSONObject.NULL)
-        put("speed", speed ?: JSONObject.NULL); put("eta", eta ?: JSONObject.NULL)
-        put("downloaded", downloaded ?: JSONObject.NULL); put("totalBytes", totalBytes ?: JSONObject.NULL)
-        put("sizeBytes", sizeBytes ?: JSONObject.NULL)
-        put("quality", quality ?: JSONObject.NULL); put("audio", audio)
-        put("log", JSONArray(log)); put("createdAt", createdAt)
-    }
-}
+    var status = "queued" // queued|running|done|error|paused|cancelled
+    var percent = 0.0
+    var stage = "排队中"
+    var title: String? = null
+    var file: String? = null // 界面展示用路径
+    var fileUri: String? = null // 已写入文件的 content:// URI
+    var treeUri: String? = null // 所在目录的树 URI（仅用户所选目录）
+    var error: String? = null
+    var speed: Long? = null
+    var eta: Long? = null
+    var downloaded: Long? = null
+    var totalBytes: Long? = null
+    var sizeBytes: Long? = null
+    val log = ArrayList<String>()
+    /** 运行中用户点了暂停 / 终止 */
+    var intent: String? = null
 
-/** SSE 客户端连接（事件入阻塞队列，由响应流消费；写失败标记摘除） */
-class SseClient {
-    val queue = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
-    @Volatile var failed = false
-    fun send(data: String) {
-        try {
-            queue.put(data.toByteArray())
-        } catch (_: Exception) {
-            failed = true
+    /** 所有字段读写都在任务锁内进行（下载线程写、接口线程读） */
+    @Synchronized
+    fun update(block: Task.() -> Unit) = block()
+
+    @Synchronized
+    fun json(): JSONObject = JSONObject().apply {
+        put("id", id)
+        put("url", url)
+        put("site", site)
+        put("status", status)
+        put("percent", percent)
+        put("stage", stage)
+        put("title", title ?: JSONObject.NULL)
+        put("file", file ?: JSONObject.NULL)
+        put("fileUri", fileUri ?: JSONObject.NULL)
+        put("treeUri", treeUri ?: JSONObject.NULL)
+        put("outDir", outDir ?: JSONObject.NULL)
+        put("error", error ?: JSONObject.NULL)
+        put("speed", speed ?: JSONObject.NULL)
+        put("eta", eta ?: JSONObject.NULL)
+        put("downloaded", downloaded ?: JSONObject.NULL)
+        put("totalBytes", totalBytes ?: JSONObject.NULL)
+        put("sizeBytes", sizeBytes ?: JSONObject.NULL)
+        put("quality", quality ?: JSONObject.NULL)
+        put("audio", audio)
+        put("playlistItems", playlistItems?.let { JSONArray(it) } ?: JSONObject.NULL)
+        put("log", JSONArray(log.takeLast(200)))
+        put("createdAt", createdAt)
+    }
+
+    companion object {
+        fun fromJson(o: JSONObject): Task = Task(
+            id = o.getString("id"),
+            url = o.getString("url"),
+            site = o.optString("site", "generic"),
+            quality = o.nullableString("quality"),
+            audio = o.optBoolean("audio", false),
+            playlistItems = o.optJSONArray("playlistItems")?.let { a -> (0 until a.length()).map { a.getInt(it) } },
+            outDir = o.nullableString("outDir"),
+            createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+        ).apply {
+            status = o.optString("status", "done")
+            percent = o.optDouble("percent", 0.0)
+            stage = o.optString("stage", "")
+            title = o.nullableString("title")
+            file = o.nullableString("file")
+            fileUri = o.nullableString("fileUri")
+            treeUri = o.nullableString("treeUri")
+            error = o.nullableString("error")
+            sizeBytes = if (o.isNull("sizeBytes")) null else o.optLong("sizeBytes")
+            o.optJSONArray("log")?.let { a -> for (i in 0 until a.length()) log.add(a.optString(i)) }
         }
     }
 }
 
 /**
- * 任务引擎：队列 + 历史持久化 + SSE 广播（独立模式核心）。
- * 下载执行链：BiliEngine(WebView 页内取流) → HttpDownloader(OkHttp → 系统下载目录)。
+ * 任务引擎：队列 + 各站点取流 + 落盘 + 历史持久化 + SSE 广播。
+ * 任务顺序执行（同一时间只跑一个），与桌面端行为一致。
  */
-class TaskEngine(private val ctx: Context) {
-    val tasks = LinkedHashMap<String, Task>()
-    private val queue = ConcurrentLinkedQueue<String>()
-    val sseClients = mutableListOf<SseClient>()
-    private val historyFile = File(ctx.filesDir, "history.json")
-    private val prefs = ctx.getSharedPreferences("config", Context.MODE_PRIVATE)
-    @Volatile private var running = false
+class TaskEngine(ctx: Context) {
+    private val app = ctx.applicationContext
+    private val prefs = app.getSharedPreferences("config", Context.MODE_PRIVATE)
+    private val stateFile = File(app.filesDir, "history.json")
+    private val tasks = ConcurrentHashMap<String, Task>()
+    private val queue = LinkedBlockingQueue<String>()
+    private val clients = ConcurrentLinkedQueue<Client>()
+    private val lock = Any()
+
+    @Volatile private var worker: Thread? = null
     @Volatile private var current: Task? = null
-    @Volatile private var currentCancel: (() -> Unit)? = null
+    @Volatile private var currentFlag: CancelFlag? = null
+
+    /** SSE 客户端：每人一个有界队列，写不进去（对端假死）就丢弃该连接 */
+    private class Client(val queue: LinkedBlockingQueue<ByteArray>) {
+        @Volatile var dead = false
+
+        fun offer(data: String) {
+            if (dead || !queue.offer(data.toByteArray())) {
+                dead = true
+                queue.clear()
+            }
+        }
+    }
 
     init {
-        // 启动回填历史
+        // 启动回填：上次的历史，以及被应用重启打断的任务
         try {
-            if (historyFile.exists()) {
-                val arr = JSONArray(historyFile.readText())
+            if (stateFile.exists()) {
+                val arr = JSONArray(stateFile.readText())
                 for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    val t = Task(o.getString("id"), o.getString("url"), o.getString("site"))
-                    t.status = "done"; t.percent = 100.0; t.stage = "完成"
-                    t.title = if (o.isNull("title")) null else o.getString("title")
-                    t.file = if (o.isNull("file")) null else o.getString("file")
-                    t.sizeBytes = if (o.isNull("sizeBytes")) null else o.getLong("sizeBytes")
-                    t.createdAt = o.getLong("createdAt")
+                    val t = Task.fromJson(arr.getJSONObject(i))
+                    if (t.status == "running" || t.status == "queued") {
+                        t.update {
+                            status = "paused"
+                            stage = "已暂停"
+                            percent = 0.0
+                            speed = null
+                            eta = null
+                            log.add("⏸ 应用重启导致下载中断，点「恢复」重新下载")
+                        }
+                    }
                     tasks[t.id] = t
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "读取历史失败", e)
+        }
     }
 
-    fun getConfig(): JSONObject = JSONObject().apply {
-        put("proxy", "")
-        put("bilibiliSessdata", prefs.getString("sessdata", "") ?: "")
-        put("hlsSites", org.json.JSONArray(prefs.getString("hlsSites", "[]")))
+    /* ================= 配置 ================= */
+
+    fun config(): JSONObject = JSONObject().apply {
+        put("proxy", proxy())
+        put("bilibiliSessdata", sessdata())
+        put("hlsSites", JSONArray(hlsSites()))
+        put("platform", "android")
+        put("outDir", prefs.getString(KEY_OUTDIR, null) ?: JSONObject.NULL)
+        put(
+            "outDirLabel",
+            prefs.getString(KEY_OUTDIR, null)?.let { Storage.label(app, Uri.parse(it)) } ?: JSONObject.NULL,
+        )
     }
 
-    fun saveConfig(key: String, value: String) {
-        prefs.edit().putString(key, value).apply()
+    fun saveConfig(body: JSONObject): JSONObject {
+        if (body.has("proxy")) {
+            val v = (body.nullableString("proxy") ?: "").trim()
+            try {
+                Http.setProxy(v)
+            } catch (e: Http.InvalidProxyException) {
+                throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, e.message ?: "代理地址无效")
+            }
+            prefs.edit().putString(KEY_PROXY, v).apply()
+            HlsEngine.applyWebViewProxy(v) // 用来过人机验证的网页也要走同一个代理
+        }
+        if (body.has("bilibiliSessdata")) {
+            val v = (body.nullableString("bilibiliSessdata") ?: "").trim()
+            if (v.isNotEmpty() && !Regex("^[A-Za-z0-9%*,\\-_.]+$").matches(v)) {
+                throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "SESSDATA 格式不正确（应为浏览器 Cookie 里的纯值，不含引号或 Cookie: 前缀）")
+            }
+            prefs.edit().putString(KEY_SESSDATA, v).apply()
+        }
+        if (body.has("hlsSites")) {
+            val arr = body.optJSONArray("hlsSites")
+            val input: List<String> = arr?.let { a -> (0 until a.length()).map { a.optString(it) } }
+                ?: (body.nullableString("hlsSites") ?: "").split(Regex("[\\n,;]+"))
+            prefs.edit().putString(KEY_HLS, JSONArray(normalizeHlsSites(input)).toString()).apply()
+        }
+        return JSONObject().put("ok", true).put("proxy", proxy()).put("bilibiliSessdata", sessdata()).put("hlsSites", JSONArray(hlsSites()))
+    }
+
+    fun saveOutDir(tree: Uri) {
+        prefs.edit().putString(KEY_OUTDIR, tree.toString()).apply()
+    }
+
+    private fun proxy(): String = prefs.getString(KEY_PROXY, "") ?: ""
+
+    private fun sessdata(): String = prefs.getString(KEY_SESSDATA, "") ?: ""
+
+    private fun hlsSites(): List<String> = try {
+        val arr = JSONArray(prefs.getString(KEY_HLS, "[]") ?: "[]")
+        (0 until arr.length()).map { arr.getString(it) }
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    /* ================= 解析 / 提交 ================= */
+
+    fun parse(input: String): JSONObject {
+        val sites = hlsSites()
+        val urls = Urls.extract(input).distinct()
+        return JSONObject().put(
+            "urls",
+            JSONArray().apply { for (u in urls) put(JSONObject().put("url", u).put("site", Sites.of(u, sites))) },
+        )
+    }
+
+    /** 探测输入是否为多视频源（播放列表 / 多 P），是则返回选集列表 */
+    fun inspect(input: String): JSONObject {
+        val url = Urls.extract(input).firstOrNull() ?: throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "未在输入中找到链接")
+        return try {
+            val episodes = episodesOf(url, CancelFlag()) ?: emptyList()
+            if (episodes.size > 1) {
+                JSONObject().put("multi", true).put(
+                    "entries",
+                    JSONArray().apply {
+                        episodes.forEachIndexed { i, e ->
+                            put(
+                                JSONObject().put("index", i + 1).put("id", (i + 1).toString()).put("title", e.title)
+                                    .put("duration", e.duration.takeIf { it > 0 } ?: JSONObject.NULL),
+                            )
+                        }
+                    },
+                )
+            } else {
+                JSONObject().put("multi", false).put("entries", JSONArray())
+            }
+        } catch (e: Exception) {
+            // 探测失败不阻塞下载：按单视频直接提交
+            JSONObject().put("multi", false).put("entries", JSONArray()).put("error", friendly(e))
+        }
+    }
+
+    /** 是播放列表 / 多 P 时返回全部选集，否则 null */
+    private fun episodesOf(url: String, flag: CancelFlag): List<Episode>? {
+        val site = Sites.of(url, hlsSites())
+        return when (site) {
+            Sites.BILIBILI -> {
+                val info = BiliEngine.probe(app, url, sessdata(), flag)
+                if (info.pages.size > 1 && Urls.queryParam(info.pageUrl, "p") == null) {
+                    info.pages.map { Episode("https://www.bilibili.com/video/${info.bvid}?p=${it.index}", "P${it.index} ${it.title}", it.duration) }
+                } else null
+            }
+            Sites.YOUTUBE -> YouTubeEngine.probe(url, flag)
+            else -> null
+        }
+    }
+
+    fun submit(input: String, quality: String?, audio: Boolean, outDir: String?, playlistItems: List<Int>?): JSONArray {
+        val sites = hlsSites()
+        val urls = Urls.extract(input).distinct().take(10)
+        if (urls.isEmpty()) throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "未在输入中找到链接")
+        val created = ArrayList<Task>()
+        for (url in urls) {
+            val site = Sites.of(url, sites)
+            if (!Sites.SUPPORTED.contains(site)) {
+                // 明确失败并说明原因，不要静默忽略
+                val t = Task(newId(), url, site, quality, audio, playlistItems, outDir)
+                t.update {
+                    status = "error"
+                    stage = ""
+                    error = Sites.unsupportedMessage(site)
+                    log.add("✖ $error")
+                }
+                tasks[t.id] = t
+                created.add(t)
+                continue
+            }
+            // 播放列表 / 多 P：展开成每集一个任务（探测失败则按单视频处理）
+            val episodes = try {
+                episodesOf(url, CancelFlag())
+            } catch (_: Exception) {
+                null
+            }
+            if (episodes != null && episodes.size > 1) {
+                val picked = episodes.filterIndexed { i, _ -> playlistItems == null || playlistItems.contains(i + 1) }.take(MAX_EPISODES)
+                for (e in picked) created.add(enqueue(e.url, site, quality, audio, outDir, e.title))
+            } else {
+                created.add(enqueue(url, site, quality, audio, outDir, null))
+            }
+        }
+        for (t in created) emit(t)
+        persist()
+        kick()
+        return JSONArray().apply { for (t in created) put(t.json()) }
+    }
+
+    private fun enqueue(url: String, site: String, quality: String?, audio: Boolean, outDir: String?, title: String?): Task {
+        val t = Task(newId(), url, site, quality, audio, null, outDir)
+        t.title = title
+        tasks[t.id] = t
+        queue.add(t.id)
+        return t
+    }
+
+    /* ================= 任务操作 ================= */
+
+    fun retry(id: String): JSONObject {
+        val t = tasks[id] ?: throw ApiError(NanoHTTPD.Response.Status.NOT_FOUND, "任务不存在")
+        synchronized(t) {
+            if (t.status == "running" || t.status == "queued") throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "任务进行中，无法重试")
+            val resumed = t.status == "paused"
+            t.update {
+                status = "queued"
+                percent = 0.0
+                stage = if (resumed) "恢复中…" else "排队中"
+                error = null
+                file = null
+                fileUri = null
+                treeUri = null
+                speed = null
+                eta = null
+                downloaded = null
+                totalBytes = null
+                sizeBytes = null
+                createdAt = System.currentTimeMillis()
+                intent = null
+                log.clear()
+                log.add(if (resumed) "↻ 恢复下载" else "↻ 重新下载")
+            }
+        }
+        queue.add(id)
+        emit(t)
+        persist()
+        kick()
+        return JSONObject().put("ok", true).put("task", t.json())
+    }
+
+    fun pause(id: String): JSONObject = interrupt(id, "paused")
+
+    fun cancel(id: String): JSONObject = interrupt(id, "cancelled")
+
+    private fun interrupt(id: String, wanted: String): JSONObject {
+        val t = tasks[id] ?: throw ApiError(NanoHTTPD.Response.Status.NOT_FOUND, "任务不存在")
+        val verb = if (wanted == "paused") "暂停" else "终止"
+        val flag: CancelFlag?
+        synchronized(t) {
+            when (t.status) {
+                "queued" -> {
+                    queue.remove(id)
+                    t.status = wanted
+                    t.stage = if (wanted == "paused") "已暂停" else "已终止"
+                    flag = null
+                }
+                "running" -> {
+                    if (current !== t) throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "任务不在下载中，无法$verb")
+                    t.intent = wanted
+                    flag = currentFlag
+                }
+                else -> throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "任务不在下载中，无法$verb")
+            }
+        }
+        flag?.cancel()
+        emit(t)
+        return JSONObject().put("ok", true)
+    }
+
+    fun delete(id: String): JSONObject {
+        val t = tasks[id] ?: throw ApiError(NanoHTTPD.Response.Status.NOT_FOUND, "任务不存在")
+        synchronized(t) {
+            if (t.status == "running" || t.status == "queued") throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "任务进行中，请先终止")
+        }
+        tasks.remove(id)
+        persist()
+        broadcast(JSONObject().put("type", "delete").put("id", id))
+        return JSONObject().put("ok", true)
+    }
+
+    fun snapshot(): JSONArray = JSONArray().apply {
+        tasks.values.sortedByDescending { it.createdAt }.forEach { put(it.json()) }
     }
 
     fun stats(): JSONObject {
         var bytes = 0L
         var count = 0
-        try {
-            if (historyFile.exists()) {
-                val arr = JSONArray(historyFile.readText())
-                count = arr.length()
-                for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    if (!o.isNull("sizeBytes")) bytes += o.getLong("sizeBytes")
-                }
+        for (t in tasks.values) synchronized(t) {
+            if (t.status == "done") {
+                count++
+                bytes += t.sizeBytes ?: 0
             }
-        } catch (_: Exception) {}
+        }
         return JSONObject().put("totalFiles", count).put("totalBytes", bytes)
     }
 
-    fun parseInput(input: String): JSONObject {
-        val found = Regex("https?://[^\\s'\"，。,；;<>（）()【】\\[\\]]+")
-            .findAll(input).map { it.value.trimEnd('.', ',', '!', '?', '；', '：') }.distinct().toList()
-        val urls = JSONArray()
-        for (u in found) {
-            urls.put(JSONObject().put("url", u).put("site", siteOf(u)))
+    /** 用系统播放器打开已下载的文件（[path] 是任务里展示的 file 字段） */
+    fun open(path: String): JSONObject {
+        val t = tasks.values.firstOrNull { it.file == path && it.fileUri != null }
+            ?: throw ApiError(NanoHTTPD.Response.Status.NOT_FOUND, "文件不存在（可能已被移动或删除）")
+        var uri = Uri.parse(t.fileUri!!)
+        if (uri.scheme == "file") {
+            uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", File(uri.path!!))
         }
-        return JSONObject().put("urls", urls)
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, Storage.mimeFor(path))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            app.startActivity(intent)
+        } catch (e: Exception) {
+            throw ApiError(NanoHTTPD.Response.Status.INTERNAL_ERROR, "没有能打开这个文件的应用")
+        }
+        return JSONObject().put("ok", true)
     }
 
-    /** 站点识别（独立模式：B站 / YouTube 全功能；hlsSites 域名走通用 HLS 引擎） */
-    private fun siteOf(url: String): String {
-        val u = try { java.net.URI(url) } catch (_: Exception) { return "generic" }
-        val host = (u.host ?: "").lowercase()
-        return when {
-            host.endsWith("bilibili.com") || host.endsWith("b23.tv") -> "bilibili"
-            host.endsWith("douyin.com") -> "douyin"
-            host.endsWith("xiaohongshu.com") || host.endsWith("xhslink.com") -> "xiaohongshu"
-            host.endsWith("youtube.com") || host.endsWith("youtu.be") -> "youtube"
-            hlsSites().any { host == it || host.endsWith(".$it") } -> "hls"
-            else -> "generic"
+    /** 打开文件所在目录：默认目录 → 系统下载列表；用户所选目录 → 系统文件管理器定位 */
+    fun reveal(path: String): JSONObject {
+        val t = tasks.values.firstOrNull { it.file == path }
+            ?: throw ApiError(NanoHTTPD.Response.Status.NOT_FOUND, "文件不存在")
+        val tree = t.treeUri?.let { Uri.parse(it) }
+        val intent = if (tree != null) {
+            val doc = t.fileUri?.let { Uri.parse(it) } ?: throw ApiError(NanoHTTPD.Response.Status.NOT_FOUND, "文件不存在")
+            Storage.revealIntent(app, tree, doc)
+        } else {
+            null
+        } ?: Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)
+        try {
+            app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            // 系统文件管理器不认这个目录时，退回到下载列表
+            runCatching { app.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        }
+        return JSONObject().put("ok", true)
+    }
+
+    /* ================= 事件流（SSE） ================= */
+
+    fun openEventStream(): InputStream {
+        val client = Client(LinkedBlockingQueue(4096))
+        clients.add(client)
+        client.offer("retry: 2000\n\n")
+        client.offer("data: ${JSONObject().put("type", "init").put("tasks", snapshot())}\n\n")
+        return object : InputStream() {
+            private var buf = ByteArray(0)
+            private var pos = 0
+            @Volatile private var closed = false
+
+            override fun read(): Int {
+                val one = ByteArray(1)
+                val n = read(one, 0, 1)
+                return if (n <= 0) -1 else one[0].toInt() and 0xFF
+            }
+
+            // 必须实现批量读：InputStream 的默认实现会在取到第一个字节后继续逐字节等待后续数据，
+            // 导致每条事件都要等到下一条到来（或 keepalive）才发得出去
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (len == 0) return 0
+                while (pos >= buf.size) {
+                    if (closed || client.dead) return -1
+                    buf = try {
+                        client.queue.poll(KEEPALIVE_SEC, TimeUnit.SECONDS)
+                    } catch (_: InterruptedException) {
+                        return -1
+                    } ?: ": keepalive\n\n".toByteArray()
+                    pos = 0
+                }
+                val n = minOf(len, buf.size - pos)
+                System.arraycopy(buf, pos, b, off, n)
+                pos += n
+                return n
+            }
+
+            override fun available(): Int = buf.size - pos
+
+            override fun close() {
+                closed = true
+                clients.remove(client)
+            }
         }
     }
 
-    /** config SharedPreferences 里的 hlsSites（JSON 数组字符串，与桌面 config.json 同义） */
-    private fun hlsSites(): List<String> = try {
-        val raw = prefs.getString("hlsSites", "[]") ?: "[]"
-        val arr = org.json.JSONArray(raw)
-        (0 until arr.length()).map { arr.getString(it) }
-    } catch (_: Exception) { emptyList() }
+    private fun emit(t: Task) = broadcast(JSONObject().put("type", "task").put("task", t.json()))
 
-    fun submit(input: String, quality: String?, audio: Boolean): List<Task> {
-        val urls = parseInput(input).getJSONArray("urls")
-        val created = mutableListOf<Task>()
-        for (i in 0 until urls.length()) {
-            val u = urls.getJSONObject(i).getString("url")
-            val site = urls.getJSONObject(i).getString("site")
-            // 独立模式支持：B站 / YouTube / hlsSites 域名（通用 HLS 引擎）。其余明确失败并指引走桌面端
-            if (site != "bilibili" && site != "youtube" && site != "hls") {
-                val t = Task(newId(), u, site, status = "error", error = "手机独立模式暂不支持该站点（抖音/小红书等需桌面端）；B站/YouTube 可直接下载")
-                t.stage = ""
-                tasks[t.id] = t; broadcast(t); created.add(t)
+    private val lastProgress = ConcurrentHashMap<String, Long>()
+
+    /** 进度事件限频（每任务 300ms 一次），状态变化走不受限的 emit */
+    internal fun emitProgress(t: Task) {
+        val now = System.currentTimeMillis()
+        val last = lastProgress[t.id] ?: 0L
+        if (now - last < 300) return
+        lastProgress[t.id] = now
+        emit(t)
+    }
+
+    @Synchronized
+    private fun broadcast(o: JSONObject) {
+        if (clients.isEmpty()) return
+        val data = "data: $o\n\n"
+        clients.forEach { it.offer(data) }
+        clients.removeAll { it.dead }
+    }
+
+    /* ================= 执行 ================= */
+
+    private fun kick() {
+        synchronized(lock) {
+            val w = worker
+            if (w == null || !w.isAlive) worker = thread(name = "task-worker", isDaemon = true) { workLoop() }
+        }
+    }
+
+    private fun workLoop() {
+        while (true) {
+            val id = queue.poll()
+            if (id == null) {
+                synchronized(lock) {
+                    // 再次确认：取空和退出之间可能有新任务入队
+                    if (queue.isEmpty()) {
+                        worker = null
+                        return
+                    }
+                }
                 continue
             }
-            val t = Task(newId(), u, site, quality = quality, audio = audio)
-            tasks[t.id] = t
-            queue.add(t.id)
-            broadcast(t)
-            created.add(t)
-        }
-        pump()
-        return created
-    }
-
-    fun retry(id: String): Boolean {
-        val t = tasks[id] ?: return false
-        if (t.status == "running" || t.status == "queued") return false
-        t.status = "queued"; t.percent = 0.0; t.stage = "排队中"; t.error = null
-        t.file = null; t.speed = null; t.eta = null; t.downloaded = null; t.totalBytes = null
-        t.log.clear(); t.createdAt = System.currentTimeMillis()
-        queue.add(id); broadcast(t); pump()
-        return true
-    }
-
-    fun pauseOrCancel(id: String, intent: String): Boolean {
-        val t = tasks[id] ?: return false
-        if (t.status == "queued") {
-            queue.remove(id)
-            t.status = intent; t.stage = if (intent == "paused") "已暂停" else "已终止"
-            broadcast(t); return true
-        }
-        if (t.status != "running" || current?.id != id) return false
-        t.stage = if (intent == "paused") "已暂停" else "已终止"
-        currentCancel?.invoke()
-        return true
-    }
-
-    private fun pump() {
-        if (running) return
-        running = true
-        thread(isDaemon = true, name = "task-pump") {
-            while (true) {
-                val id = queue.poll() ?: break
-                val t = tasks[id] ?: continue
-                if (t.status == "paused" || t.status == "cancelled") continue
-                current = t
-                t.status = "running"; t.stage = "解析中"; t.error = null
-                broadcast(t)
-                try {
-                    runTask(t)
-                    t.status = "done"; t.percent = 100.0; t.stage = "完成"
-                    t.speed = null; t.eta = null
-                    t.log.add("✔ ${t.file}")
-                    appendHistory(t)
-                    broadcast(t)
-                } catch (e: Exception) {
-                    val aborted = t.stage == "已暂停" || t.stage == "已终止"
-                    if (!aborted) {
-                        t.status = "error"
-                        t.error = e.message?.take(300) ?: "下载失败"
-                        t.log.add("✖ ${t.error}")
-                        broadcast(t)
-                    } else {
-                        t.status = if (t.stage == "已暂停") "paused" else "cancelled"
-                        broadcast(t)
-                    }
-                } finally {
-                    current = null; currentCancel = null
-                }
-            }
-            running = false
+            val t = tasks[id] ?: continue
+            if (t.status != "queued") continue
+            runOne(t)
         }
     }
 
-    private fun runTask(t: Task) {
-        // 1) 解析：按站点分发到对应引擎（B站 / YouTube / 通用 HLS）
-        t.stage = "解析中"; broadcast(t)
-
-        // 通用 HLS：解析出 m3u8 后走专用分段下载（不走 downloadAndStore）
-        if (t.site == "hls") {
-            runHlsTask(t)
-            return
+    private fun runOne(t: Task) {
+        val flag = CancelFlag()
+        current = t
+        currentFlag = flag
+        t.update {
+            status = "running"
+            stage = "解析中"
+            error = null
+            intent = null
+            percent = 0.0
         }
-
-        val extraction = when (t.site) {
-            "youtube" -> {
-                val ex = YouTubeEngine.extract(t.url, t.quality, t.audio)
-                // YouTube 视频模式返回两路流，包装成单规格语义
-                if (ex.audioSpec != null) {
-                    val audioSpec = ex.audioSpec!!
-                    // 合并阶段的进度按 80%（下载两路）+ 20%（封装）折算
-                    val mergedSpec = DownloadSpec(
-                        title = audioSpec.title,
-                        fileName = audioSpec.fileName.replace(Regex("\\.apart$"), ".mp4"),
-                        urls = audioSpec.urls,
-                        totalBytes = audioSpec.totalBytes,
-                    )
-                    return runYouTubeTwoStream(t, ex.videoSpec, audioSpec, mergedSpec)
-                }
-                ex.title to ex.videoSpec
-            }
-            else -> {
-                val spec = BiliEngine.extract(ctx, t.url, prefs.getString("sessdata", "") ?: "", t.quality)
-                spec.title to spec
-            }
-        }
-        val (title, spec) = extraction
-        t.title = title
-        broadcast(t)
-        downloadAndStore(t, spec, spec.fileName)
-    }
-
-    /** 通用 HLS 任务：WebView 过 CF 取 m3u8 → HlsDownloader 分段下载 → MediaStore */
-    private fun runHlsTask(t: Task) {
-        t.stage = "页面解析中（Cloudflare）"; broadcast(t)
-        val r = HlsEngine.extract(ctx, t.url)
-        t.title = r.title
-        t.file = "Download/VideoDownloader/${r.title}.ts"
-        broadcast(t)
-
-        t.stage = "下载 HLS 分段"; broadcast(t)
-        val out = File.createTempFile("hls-", ".ts", ctx.cacheDir)
-        val cb = makeProgressCb(t)
-        HlsDownloader.download(ctx, listOf(r.m3u8Url), r.referer, out, object : HlsDownloader.Progress {
-            override fun onProgress(percent: Double, done: Int, total: Int, speed: Long, eta: Int) {
-                t.percent = percent
-                t.downloaded = done.toLong()
-                t.totalBytes = total.toLong()
-                t.speed = speed
-                t.eta = eta
-                broadcastThrottled(t)
-            }
-            override fun onCancelled() { throw InterruptedException("cancelled") }
-            override fun registerCancel(fn: () -> Unit) { currentCancel = fn }
-        })
-
-        t.stage = "落盘"; broadcast(t)
-        val saved = MediaStoreSaver.saveFromCache(ctx, out, "${r.title}.ts")
-        out.delete()
-        t.file = saved.displayPath
-        t.sizeBytes = out.length().takeIf { it > 0 } ?: t.totalBytes
-    }
-
-    /** YouTube 双流：下载视频流 + 音频流 → MediaMuxer 封装 → MediaStore */
-    private fun runYouTubeTwoStream(t: Task, videoSpec: DownloadSpec, audioSpec: DownloadSpec, finalSpec: DownloadSpec) {
-        val cb = makeProgressCb(t)
-        t.stage = "下载视频流"; broadcast(t)
-        val vFile = HttpDownloader.downloadToCache(ctx, videoSpec, HttpDownloader.ProgressSpan(cb, 0.0, 0.6))
+        emit(t)
         try {
-            t.stage = "下载音频流"; t.speed = null; broadcast(t)
-            val aFile = HttpDownloader.downloadToCache(ctx, audioSpec, HttpDownloader.ProgressSpan(cb, 0.6, 0.2))
-            try {
-                t.stage = "封装 MP4"; t.speed = null; t.eta = null; broadcast(t)
-                val name = finalSpec.fileName
-                val outFile = File(ctx.cacheDir, name)
-                Mp4Remuxer.mux(vFile, aFile, outFile)
-                val saved = MediaStoreSaver.saveFromCache(ctx, outFile, name)
-                outFile.delete()
-                t.file = saved.displayPath
-                t.sizeBytes = outFile.length()
-            } finally {
-                aFile.delete()
+            runTask(t, flag)
+            t.update {
+                status = "done"
+                percent = 100.0
+                stage = "完成"
+                speed = null
+                eta = null
+                downloaded = sizeBytes ?: downloaded
+                file?.let { log.add("✔ $it") }
+            }
+        } catch (e: CancelledException) {
+            val wanted = t.intent ?: "cancelled"
+            t.update {
+                status = wanted
+                stage = if (wanted == "paused") "已暂停" else "已终止"
+                speed = null
+                eta = null
+                log.add(if (wanted == "paused") "⏸ 已暂停" else "⏹ 已终止")
+            }
+            if (wanted == "cancelled") partDir(t).deleteRecursively()
+        } catch (e: Exception) {
+            Log.e(TAG, "任务失败 ${t.url}", e)
+            partDir(t).deleteRecursively()
+            t.update {
+                status = "error"
+                stage = ""
+                speed = null
+                eta = null
+                error = friendly(e)
+                log.add("✖ $error")
+            }
+        } catch (e: LinkageError) {
+            // 系统组件在当前机型上缺失（如模拟器没有某类编解码器）
+            t.update { status = "error"; stage = ""; error = "当前系统缺少所需组件：${e.message}"; log.add("✖ $error") }
+        } finally {
+            lastProgress.remove(t.id)
+            current = null
+            currentFlag = null
+            persist()
+            emit(t)
+        }
+    }
+
+    private fun runTask(t: Task, flag: CancelFlag) {
+        when (t.site) {
+            Sites.BILIBILI -> runBili(t, flag)
+            Sites.YOUTUBE -> runYouTube(t, flag)
+            Sites.HLS -> runHls(t, flag)
+            else -> throw Http.ApiException(Sites.unsupportedMessage(t.site))
+        }
+    }
+
+    private fun runBili(t: Task, flag: CancelFlag) {
+        val spec = BiliEngine.extract(app, t.url, sessdata(), t.quality, flag)
+        setTitle(t, spec.title)
+        saveDirect(t, spec, flag, 0.0, 1.0)
+    }
+
+    private fun runYouTube(t: Task, flag: CancelFlag) = YouTubeFlow.run(this, t, flag)
+
+    private fun runHls(t: Task, flag: CancelFlag) = HlsFlow.run(this, t, flag)
+
+    /* ---- 供各站点流程复用的工具 ---- */
+
+    /** 解析出标题后更新任务（任务行随即显示标题） */
+    internal fun setTitle(t: Task, value: String) {
+        t.update { title = value }
+        emit(t)
+    }
+
+    /** 下载目录里新建目标文件 */
+    internal fun openSink(t: Task, name: String, mime: String): StorageSink = Storage.open(app, t.outDir, name, mime)
+
+    /** 单文件直存：网络流 → 保存目标 */
+    internal fun saveDirect(t: Task, spec: DownloadSpec, flag: CancelFlag, from: Double, to: Double) {
+        val sink = openSink(t, spec.fileName, spec.mime)
+        var committed = false
+        try {
+            t.update { file = sink.displayPath; stage = "下载中" }
+            emit(t)
+            val size = HttpDownloader.write(spec, sink.outputStream, flag, progress(t, flag, from, to))
+            sink.outputStream.flush()
+            sink.commit()
+            committed = true
+            t.update {
+                sizeBytes = size
+                fileUri = sink.fileUri.toString()
+                treeUri = sink.treeUri?.toString()
+                percent = to * 100
             }
         } finally {
-            vFile.delete()
+            sink.close()
+            if (!committed) sink.abort()
         }
     }
 
-    /** 单流下载（B站 / YouTube 音频模式）：下载 → MediaStore */
-    private fun downloadAndStore(t: Task, spec: DownloadSpec, displayFile: String) {
-        t.stage = "下载中"; t.file = "Download/VideoDownloader/$displayFile"
-        broadcast(t)
-        val cb = makeProgressCb(t)
-        val saved = HttpDownloader.download(ctx, spec, cb)
-        t.file = saved.displayPath
-        t.sizeBytes = saved.sizeBytes
-    }
-
-    /** 双流阶段的进度回调（总进度已在 ProgressSpan 内缩放） */
-    private fun makeProgressCb(t: Task): HttpDownloader.Progress = object : HttpDownloader.Progress {
-        override fun onProgress(percent: Double, downloaded: Long, total: Long, speed: Long, eta: Int) {
-            t.percent = percent; t.downloaded = downloaded; t.totalBytes = total
-            t.speed = speed; t.eta = eta
-            broadcastThrottled(t)
-        }
-        override fun onCancelled() { throw InterruptedException("cancelled") }
-        override fun registerCancel(fn: () -> Unit) { currentCancel = fn }
-    }
-
-    private var lastEmit = 0L
-    @Synchronized private fun broadcastThrottled(t: Task) {
-        val now = System.currentTimeMillis()
-        if (now - lastEmit > 300) { lastEmit = now; broadcast(t) }
-    }
-
-    @Synchronized fun broadcast(t: Task) {
-        val data = "data: ${JSONObject().put("type", "task").put("task", t.toJson())}\n\n"
-        sseClients.removeAll { it.failed }
-        sseClients.forEach { it.send(data) }
-    }
-
-    fun snapshot(): JSONArray {
-        val arr = JSONArray()
-        tasks.values.sortedByDescending { it.createdAt }.forEach { arr.put(it.toJson()) }
-        return arr
-    }
-
-    private fun appendHistory(t: Task) {
+    /** 把缓存里的现成文件原样存进保存目标（网络流已经是可播放的格式，不需要再处理时用） */
+    internal fun saveCacheFile(t: Task, source: File, name: String, mime: String) {
+        val sink = openSink(t, name, mime)
+        var committed = false
         try {
-            val arr = if (historyFile.exists()) JSONArray(historyFile.readText()) else JSONArray()
-            for (i in (arr.length() - 1) downTo 0) if (arr.getJSONObject(i).getString("id") == t.id) arr.remove(i)
-            arr.put(t.toJson())
-            while (arr.length() > 500) arr.remove(0)
-            historyFile.writeText(arr.toString())
-        } catch (_: Exception) {}
+            t.update { file = sink.displayPath }
+            source.inputStream().use { it.copyTo(sink.outputStream) }
+            sink.outputStream.flush()
+            sink.commit()
+            committed = true
+            markSaved(t, sink, source.length(), 100.0)
+        } finally {
+            sink.close()
+            if (!committed) sink.abort()
+        }
     }
 
-    private fun newId() = UUID.randomUUID().toString().replace("-", "").take(8)
+    internal fun markSaved(t: Task, sink: StorageSink, size: Long, percent: Double) {
+        t.update {
+            sizeBytes = size
+            fileUri = sink.fileUri.toString()
+            treeUri = sink.treeUri?.toString()
+            this.percent = percent
+        }
+    }
+
+    /** 把下载进度映射到任务的 [from, to] 区间 */
+    internal fun progress(t: Task, flag: CancelFlag, from: Double, to: Double) = HttpDownloader.Progress { done, total, speed ->
+        flag.throwIfCancelled()
+        t.update {
+            if (total > 0) {
+                percent = (from + (to - from) * (done.toDouble() / total)).coerceIn(0.0, 1.0) * 100
+                totalBytes = total
+            }
+            downloaded = done
+            this.speed = if (speed > 0) speed else null
+            eta = if (total > 0 && speed > 0) (total - done) / speed else null
+        }
+        emitProgress(t)
+    }
+
+    internal fun stage(t: Task, text: String) {
+        t.update { stage = text; speed = null; eta = null }
+        emit(t)
+    }
+
+    internal fun log(t: Task, line: String) {
+        t.update { log.add(line); if (log.size > 200) log.removeAt(0) }
+        emit(t)
+    }
+
+    /** YouTube / HLS 的中间文件目录（暂停时保留用于断点续传） */
+    internal fun partDir(t: Task): File = File(File(app.cacheDir, "parts"), t.id)
+
+    internal fun appContext(): Context = app
+
+    /* ---- 错误文案 ---- */
+
+    internal fun friendly(e: Throwable): String = when (e) {
+        is Http.ApiException -> e.message ?: "下载失败"
+        is Http.HttpException -> when (e.code) {
+            403 -> "服务器拒绝了请求（HTTP 403）：链接可能已过期或需要登录，请重试"
+            404 -> "资源不存在（HTTP 404）：可能已下架"
+            in 500..599 -> "服务器出错（HTTP ${e.code}），请稍后重试"
+            else -> "服务器返回 HTTP ${e.code}"
+        }
+        is StorageException -> e.message ?: "无法写入保存目录，请重新选择保存目录"
+        is IOException -> "网络错误：${e.message ?: e.javaClass.simpleName}"
+        else -> "${e.javaClass.simpleName}: ${e.message?.take(300) ?: ""}"
+    }
+
+    /* ---- 持久化 ---- */
+
+    /** 全部任务落盘（最新的 500 条），重启后据此回填列表 */
+    @Synchronized
+    private fun persist() {
+        try {
+            val arr = JSONArray()
+            tasks.values.sortedByDescending { it.createdAt }.take(MAX_RECORDS).forEach { arr.put(it.json()) }
+            val tmp = File(stateFile.path + ".tmp")
+            tmp.writeText(arr.toString())
+            if (!tmp.renameTo(stateFile)) {
+                stateFile.writeText(arr.toString())
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "保存历史失败", e)
+        }
+    }
+
+    private fun newId(): String = UUID.randomUUID().toString().replace("-", "").take(8)
+
+    companion object {
+        private const val TAG = "TaskEngine"
+        private const val KEY_SESSDATA = "sessdata"
+        private const val KEY_PROXY = "proxy"
+        private const val KEY_HLS = "hlsSites"
+        private const val KEY_OUTDIR = "outDir"
+        private const val MAX_RECORDS = 500
+        private const val MAX_EPISODES = 50
+        private const val KEEPALIVE_SEC = 15L
+
+        /** 与桌面端 config.mjs 的 normalizeHlsSites 同规则：去 scheme / www / 路径，只留合法域名并去重 */
+        fun normalizeHlsSites(input: List<String>): List<String> {
+            val out = ArrayList<String>()
+            for (raw in input) {
+                var d = raw.trim().lowercase()
+                if (d.isEmpty()) continue
+                d = d.replace(Regex("^https?://"), "").replace(Regex("^www\\."), "").split(Regex("[/?#]"))[0]
+                    .trim('.')
+                if (Regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$").matches(d) && !out.contains(d)) out.add(d)
+            }
+            return out
+        }
+    }
 }

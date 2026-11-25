@@ -6,12 +6,37 @@ export const serverBase = () => {
   return s.replace(/\/+$/, '');
 };
 
-const post = (p, body) =>
-  fetch(serverBase() + p, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body ?? {}),
-  }).then((r) => r.json());
+/**
+ * 解析接口响应。
+ * HTTP 错误且响应体里有 {error} 文案时原样返回（调用方按 r.error 处理）；
+ * 响应不是 JSON（比如服务没起来时返回的错误页）则抛出带状态码的异常，不让它变成一个 undefined 悄悄溜过去。
+ */
+async function parse(r) {
+  const text = await r.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = null;
+  }
+  if (!r.ok && !data) {
+    const err = new Error(`服务器返回 HTTP ${r.status}${text ? `：${text.slice(0, 120)}` : ''}`);
+    err.status = r.status;
+    throw err;
+  }
+  return data ?? {};
+}
+
+const post = async (p, body) =>
+  parse(
+    await fetch(serverBase() + p, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+    }),
+  );
+
+const get = async (p) => parse(await fetch(serverBase() + p));
 
 export const api = {
   parse: (input) => post('/api/parse', { input }),
@@ -23,23 +48,22 @@ export const api = {
   cancel: (id) => post('/api/cancel', { id }),
   openFile: (path) => post('/api/open', { path }),
   reveal: (path) => post('/api/reveal', { path }),
-  pickDir: () => post('/api/pick-dir', {}),
+  // outDir：当前保存目录。安卓端据此决定系统选择器打开时停在哪（当前目录里）
+  pickDir: (outDir) => post('/api/pick-dir', { outDir: outDir || null }),
   proxyTest: (proxy) => post('/api/proxy-test', { proxy }),
   saveProxy: (proxy) => post('/api/config', { proxy }),
   saveSessdata: (bilibiliSessdata) => post('/api/config', { bilibiliSessdata }),
   saveHlsSites: (hlsSites) => post('/api/config', { hlsSites }),
-  saveHlsSites: (hlsSites) => post('/api/config', { hlsSites }),
-  getConfig: () => fetch(serverBase() + '/api/config').then((r) => r.json()),
-  getTasks: () => fetch(serverBase() + '/api/tasks').then((r) => r.json()),
-  fsList: (dir) =>
-    fetch(serverBase() + '/api/fs/list' + (dir ? '?dir=' + encodeURIComponent(dir) : '')).then((r) => r.json()),
+  getConfig: () => get('/api/config'),
+  getTasks: () => get('/api/tasks'),
+  fsList: (dir) => get('/api/fs/list' + (dir ? '?dir=' + encodeURIComponent(dir) : '')),
 };
 
 export function midTrunc(name, head = 24, tail = 14) {
   return name.length > head + tail + 1 ? name.slice(0, head) + ' … ' + name.slice(-tail) : name;
 }
 
-export const SITE_LABEL = { youtube: 'YouTube', douyin: '抖音', bilibili: 'B站', xiaohongshu: '小红书' };
+export const SITE_LABEL = { youtube: 'YouTube', douyin: '抖音', bilibili: 'B站', xiaohongshu: '小红书', 'hls-generic': 'HLS' };
 
 export function fmtSpeed(bytesPerSec) {
   if (!bytesPerSec || bytesPerSec <= 0) return '';

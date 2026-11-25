@@ -1,235 +1,233 @@
 package com.sillyshalong.videodownloader
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
-import android.provider.MediaStore
+import android.util.Log
 import fi.iki.elonen.NanoHTTPD
+import fi.iki.elonen.NanoHTTPD.Response.Status
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.io.IOException
+
+/** 接口错误：[status] 作为 HTTP 状态码，文案以 {error} 返回给前端 */
+class ApiError(val status: NanoHTTPD.Response.IStatus, message: String) : IOException(message)
 
 /**
- * 独立模式本地服务（127.0.0.1:8977）：与桌面端同协议。
- * 静态资源来自 assets/public（cap sync 拷入的 web/dist），API 走 TaskEngine。
- * WebView 加载 http://127.0.0.1:8977 → 同源 → 前端零改动。
+ * 独立模式的本地服务（只监听 127.0.0.1:8977），与桌面端 src/server.mjs 是同一套 /api 协议，
+ * 前端不做区分即可复用。界面（WebView）加载 http://127.0.0.1:8977 → 与 /api 同源。
  */
-class LocalServer private constructor(port: Int, private val ctx: Context) : NanoHTTPD("127.0.0.1", port) {
+class LocalServer private constructor(private val app: Context) : NanoHTTPD("127.0.0.1", PORT) {
 
     companion object {
         const val PORT = 8977
-        lateinit var engine: TaskEngine
-        private var instance: LocalServer? = null
+        private const val TAG = "LocalServer"
+        private const val ORIGIN = "http://127.0.0.1:$PORT"
+        private const val MAX_BODY = 2L * 1024 * 1024
+        /** 空闲 keep-alive 连接的读超时：到点后服务端主动关掉，不泄漏线程 */
+        private const val IDLE_TIMEOUT_MS = 15_000
 
-        fun start(ctx: Context) {
-            if (instance == null) {
-                instance = LocalServer(PORT, ctx)
-                instance?.start(SOCKET_READ_TIMEOUT, true)
+        @Volatile private var instance: LocalServer? = null
+
+        @Volatile var engine: TaskEngine? = null
+
+        /** 启动服务（重复调用安全），返回已启动的实例 */
+        fun start(ctx: Context): LocalServer {
+            instance?.let { return it }
+            synchronized(this) {
+                instance?.let { return it }
+                var lastErr: IOException? = null
+                repeat(5) {
+                    try {
+                        val s = LocalServer(ctx.applicationContext)
+                        s.start(IDLE_TIMEOUT_MS, true)
+                        instance = s
+                        return s
+                    } catch (e: IOException) {
+                        // 端口偶尔还被上一个进程占着：稍等重试
+                        lastErr = e
+                        try {
+                            Thread.sleep(400)
+                        } catch (_: InterruptedException) {
+                        }
+                    }
+                }
+                throw lastErr ?: IOException("本地服务启动失败")
             }
         }
     }
 
-    private val mime = mapOf(
-        "html" to "text/html; charset=utf-8",
-        "js" to "text/javascript; charset=utf-8",
-        "css" to "text/css; charset=utf-8",
-        "svg" to "image/svg+xml",
-        "png" to "image/png",
-        "json" to "application/json",
-        "woff2" to "font/woff2",
-        "ico" to "image/x-icon",
-    )
+    /**
+     * 不做 GZIP 压缩。NanoHTTPD 默认会对文本类（text 开头）和 JSON 响应压缩（只要客户端声明接受，
+     * 而 WebView 总是声明接受），但压缩器要攒够数据才输出——实时事件流（SSE）被包进去后事件全压在
+     * 缓冲里，界面因此不刷新。本地回环通信也用不着压缩。
+     */
+    override fun useGzipWhenAccepted(response: Response?): Boolean = false
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri ?: "/"
-        // CORS（远程浏览器访问场景也顺带支持）
-        if (session.method == Method.OPTIONS) {
-            return newFixedLengthResponse(Response.Status.NO_CONTENT, null, "").apply { cors() }
-        }
-        if (uri.startsWith("/api/")) return api(session, uri)
-        return static(uri)
-    }
-
-    private fun Response.cors(): Response {
-        addHeader("Access-Control-Allow-Origin", "*")
-        addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        addHeader("Access-Control-Allow-Headers", "Content-Type")
-        return this
-    }
-
-    private fun static(uri: String): Response {
-        var path = uri.trimStart('/')
-        if (path.isEmpty()) path = "index.html"
-        val clean = path.split('?')[0].split("..").last()
+        val method = session.method
         return try {
-            val input = ctx.assets.open("public/$clean")
-            val bytes = input.readBytes()
-            input.close()
-            val ext = clean.substringAfterLast('.', "")
-            newFixedLengthResponse(Response.Status.OK, mime[ext] ?: "application/octet-stream", ByteArrayInputStream(bytes), bytes.size.toLong()).cors()
-        } catch (_: Exception) {
-            // SPA 回退
-            val input = ctx.assets.open("public/index.html")
-            val bytes = input.readBytes()
-            input.close()
-            newFixedLengthResponse(Response.Status.OK, mime["html"]!!, ByteArrayInputStream(bytes), bytes.size.toLong()).cors()
-        }
-    }
-
-    private fun body(session: IHTTPSession): JSONObject {
-        val map = HashMap<String, String>()
-        session.parseBody(map)
-        val raw = map["postData"] ?: return JSONObject()
-        return if (raw.isBlank()) JSONObject() else JSONObject(raw)
-    }
-
-    private fun json(o: JSONObject): Response =
-        newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", o.toString()).cors()
-
-    private fun api(session: IHTTPSession, uri: String): Response {
-        val e = engine
-        return try {
+            // 关键：任何应答之前先把请求体读完。keep-alive 连接上，没读完的字节会被当成下一条请求解析（→ 400），
+            // 这正是之前「点下载没反应」的根因之一。
+            val body = readBody(session)
             when {
-                uri == "/api/parse" && session.method == Method.POST -> {
-                    json(e.parseInput(body(session).optString("input", "")))
+                method == Method.OPTIONS -> fixed(Status.NO_CONTENT, "text/plain", "")
+                uri.startsWith("/api/") -> api(uri, method, body)
+                method == Method.GET || method == Method.HEAD -> static(uri)
+                else -> error(Status.NOT_FOUND, "not found")
+            }
+        } catch (e: ApiError) {
+            error(e.status, e.message ?: "error")
+        } catch (e: Exception) {
+            Log.e(TAG, "请求处理失败: $method $uri", e)
+            error(Status.INTERNAL_ERROR, e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    /** 读完并解析请求体；没有请求体时返回空对象 */
+    private fun readBody(session: IHTTPSession): JSONObject {
+        val len = session.headers["content-length"]?.trim()?.toLongOrNull() ?: 0L
+        if (len <= 0) return JSONObject()
+        // 写操作只收 JSON：带 JSON 内容类型的请求浏览器一定会先发预检，别的网页跨站伪造不了
+        val type = session.headers["content-type"] ?: ""
+        if (!type.startsWith("application/json")) throw ApiError(Status.UNSUPPORTED_MEDIA_TYPE, "请求必须使用 application/json")
+        if (len > MAX_BODY) throw ApiError(Status.PAYLOAD_TOO_LARGE, "请求体过大")
+        val files = HashMap<String, String>()
+        session.parseBody(files)
+        val raw = files["postData"] ?: return JSONObject()
+        return try {
+            JSONObject(raw)
+        } catch (e: JSONException) {
+            throw ApiError(Status.BAD_REQUEST, "请求体不是合法的 JSON")
+        }
+    }
+
+    private fun api(uri: String, method: Method, body: JSONObject): Response {
+        val e = engine ?: return error(Status.SERVICE_UNAVAILABLE, "服务尚未就绪")
+        val path = uri.substringBefore('?')
+        val post = method == Method.POST
+        return when {
+            // ---- 只读 ----
+            !post && path == "/api/tasks" -> ok(JSONObject().put("tasks", e.snapshot()))
+            !post && path == "/api/events" -> events(e)
+            !post && path == "/api/stats" -> ok(e.stats())
+            !post && path == "/api/config" -> ok(e.config())
+            !post && path == "/api/fs/list" ->
+                // 安卓没有「电脑目录」可浏览：目录一律走系统文件夹选择器
+                ok(JSONObject().put("path", JSONObject.NULL).put("parent", JSONObject.NULL).put("entries", JSONArray()).put("err", "请用「浏览…」打开系统文件夹选择器"))
+
+            // ---- 写操作 ----
+            post && path == "/api/config" -> ok(e.saveConfig(body))
+            post && path == "/api/parse" -> ok(e.parse(body.nullableString("input") ?: ""))
+            post && path == "/api/inspect" -> ok(e.inspect(body.nullableString("input") ?: ""))
+            post && path == "/api/download" -> {
+                val quality = body.nullableString("quality")
+                if (!quality.isNullOrBlank() && !Regex("^\\d{3,4}$").matches(quality)) {
+                    return error(Status.BAD_REQUEST, "无效的清晰度")
                 }
-
-                uri == "/api/download" && session.method == Method.POST -> {
-                    val b = body(session)
-                    val created = e.submit(
-                        b.optString("input", ""),
-                        if (b.isNull("quality")) null else b.optString("quality", null),
-                        b.optBoolean("audio", false),
-                    )
-                    val arr = JSONArray()
-                    created.forEach { arr.put(it.toJson()) }
-                    json(JSONObject().put("tasks", arr))
-                }
-
-                uri == "/api/tasks" -> json(JSONObject().put("tasks", e.snapshot()))
-
-                uri == "/api/events" -> sse()
-
-                uri == "/api/retry" && session.method == Method.POST -> {
-                    val id = body(session).optString("id", "")
-                    if (!e.retry(id)) json(JSONObject().put("error", "任务不存在或进行中"))
-                    else json(JSONObject().put("ok", true))
-                }
-
-                uri == "/api/pause" && session.method == Method.POST -> {
-                    val id = body(session).optString("id", "")
-                    if (!e.pauseOrCancel(id, "paused")) json(JSONObject().put("error", "任务不在下载中"))
-                    else json(JSONObject().put("ok", true))
-                }
-
-                uri == "/api/cancel" && session.method == Method.POST -> {
-                    val id = body(session).optString("id", "")
-                    if (!e.pauseOrCancel(id, "cancelled")) json(JSONObject().put("error", "任务不在下载中"))
-                    else json(JSONObject().put("ok", true))
-                }
-
-                uri == "/api/stats" -> json(e.stats())
-
-                uri == "/api/config" && session.method == Method.GET -> json(e.getConfig())
-
-                uri == "/api/config" && session.method == Method.POST -> {
-                    val b = body(session)
-                    if (b.has("bilibiliSessdata")) {
-                        val v = b.optString("bilibiliSessdata", "")
-                        if (v.isNotBlank() && !Regex("^[A-Za-z0-9%*,\\-_.]+$").matches(v)) {
-                            return json(JSONObject().put("error", "SESSDATA 格式不正确"))
-                        }
-                        e.saveConfig("sessdata", v)
-                    }
-                    if (b.has("hlsSites")) {
-                        // JSON 数组字符串形式存入 SharedPreferences（与 TaskEngine.hlsSites() 对应）
-                        e.saveConfig("hlsSites", b.optJSONArray("hlsSites")?.toString() ?: "[]")
-                    }
-                    json(JSONObject().put("ok", true))
-                }
-
-                uri == "/api/open" && session.method == Method.POST -> {
-                    val name = body(session).optString("path", "")
-                    openFile(name)
-                }
-
-                uri == "/api/reveal" && session.method == Method.POST -> {
-                    // 手机端：打开系统下载应用定位
-                    ctx.startActivity(
-                        Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                    json(JSONObject().put("ok", true))
-                }
-
-                uri == "/api/fs/list" -> json(
-                    JSONObject().put("path", null).put("parent", null)
-                        .put("entries", JSONArray())
-                        .put("err", "手机独立模式不支持浏览电脑目录"),
+                val items = body.optJSONArray("playlistItems")?.let { a -> (0 until a.length()).map { a.getInt(it) } }
+                val tasks = e.submit(
+                    body.nullableString("input") ?: "",
+                    quality?.ifBlank { null },
+                    body.optBoolean("audio", false),
+                    body.nullableString("outDir"),
+                    items,
                 )
-
-                uri == "/api/pick-dir" -> json(JSONObject().put("native", false))
-
-                else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "application/json", "{\"error\":\"not found\"}")
+                ok(JSONObject().put("tasks", tasks))
             }
-        } catch (ex: Exception) {
-            newFixedLengthResponse(
-                Response.Status.INTERNAL_ERROR, "application/json",
-                JSONObject().put("error", ex.message ?: "error").toString(),
-            )
+            post && path == "/api/retry" -> ok(e.retry(body.nullableString("id") ?: ""))
+            post && path == "/api/pause" -> ok(e.pause(body.nullableString("id") ?: ""))
+            post && path == "/api/cancel" -> ok(e.cancel(body.nullableString("id") ?: ""))
+            post && path == "/api/history/delete" -> ok(e.delete(body.nullableString("id") ?: ""))
+            post && path == "/api/open" -> ok(e.open(body.nullableString("path") ?: ""))
+            post && path == "/api/reveal" -> ok(e.reveal(body.nullableString("path") ?: ""))
+            post && path == "/api/proxy-test" -> ok(Http.proxyTest(body.nullableString("proxy") ?: ""))
+            post && path == "/api/pick-dir" -> pickDir(e, body)
+
+            else -> error(Status.NOT_FOUND, "not found")
         }
     }
 
-    /** 通过 MediaStore 按文件名定位并用系统播放器打开 */
-    private fun openFile(displayPath: String): Response {
-        val name = displayPath.split('/', '\\').lastOrNull() ?: return json(JSONObject().put("error", "路径无效"))
-        val proj = arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME)
-        ctx.contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, proj, null, null, null)?.use { c ->
-            while (c.moveToNext()) {
-                if (c.getString(1) == name) {
-                    val uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0).toString())
-                    ctx.startActivity(
-                        Intent(Intent.ACTION_VIEW).setDataAndType(uri, "video/mp4")
-                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                    return json(JSONObject().put("ok", true))
-                }
-            }
+    /** 弹出系统文件夹选择器并等用户选完（只阻塞这一条连接，不影响其他请求） */
+    private fun pickDir(e: TaskEngine, body: JSONObject): Response {
+        val host = MainActivity.current ?: app
+        // 打开时停在当前保存目录（页面传来的 outDir：用户选的目录，没选过就是默认目录），
+        // 而不是系统不让选的「下载」根目录
+        val current = body.nullableString("outDir")?.takeIf { it.isNotBlank() }
+        val picked: Uri? = DirPickerActivity.pick(host, Storage.pickerStartUri(app, current))
+        val r = JSONObject().put("native", true)
+        if (picked != null) {
+            e.saveOutDir(picked)
+            r.put("path", picked.toString()).put("label", Storage.label(app, picked))
+        } else {
+            r.put("path", JSONObject.NULL) // 用户取消
         }
-        return json(JSONObject().put("error", "文件不存在"))
+        return ok(r)
     }
 
-    /** SSE：任务事件流（每客户端一个阻塞队列，空闲 15s 发 keepalive 注释行） */
-    private fun sse(): Response {
-        val cl = SseClient()
-        engine.sseClients.add(cl)
-        cl.send("retry: 2000\n\n")
-        cl.send("data: ${JSONObject().put("type", "init").put("tasks", engine.snapshot())}\n\n")
-
-        val stream = object : java.io.InputStream() {
-            private var buf: ByteArray? = null
-            private var pos = 0
-            override fun read(): Int {
-                while (true) {
-                    val b = buf
-                    if (b != null && pos < b.size) return b[pos++].toInt() and 0xFF
-                    buf = try {
-                        cl.queue.poll(15, java.util.concurrent.TimeUnit.SECONDS)
-                    } catch (_: InterruptedException) {
-                        null
-                    }
-                    if (buf == null) {
-                        // SSE 注释行 keepalive——必须带换行，否则浏览器解析器
-                        // 会把 ':' 缓冲住并吞掉后续所有事件行
-                        buf = ": keepalive\n\n".toByteArray()
-                        pos = 0
-                        continue
-                    }
-                    pos = 0
-                }
-            }
-        }
-        val resp = newChunkedResponse(Response.Status.OK, "text/event-stream", stream)
+    /** 任务事件流（SSE）：长连接，内容边产生边写出 */
+    private fun events(e: TaskEngine): Response {
+        val resp = newChunkedResponse(Status.OK, "text/event-stream", e.openEventStream())
         resp.addHeader("Cache-Control", "no-cache")
         return resp
     }
+
+    private fun static(uri: String): Response {
+        var rel = uri.substringBefore('?').trimStart('/')
+        if (rel.isEmpty()) rel = "index.html"
+        if (rel.split('/').any { it == ".." }) return error(Status.FORBIDDEN, "forbidden")
+        val bytes = try {
+            app.assets.open("public/$rel").use { it.readBytes() }
+        } catch (_: IOException) {
+            null
+        }
+        if (bytes == null) {
+            // 找不到的路径一律回首页（单页应用的前端路由）
+            if (rel != "index.html") return static("/index.html")
+            return error(Status.INTERNAL_ERROR, "前端资源缺失：请重新安装应用")
+        }
+        val mime = MIME[rel.substringAfterLast('.', "").lowercase()] ?: "application/octet-stream"
+        val resp = newFixedLengthResponse(Status.OK, mime, ByteArrayInputStream(bytes), bytes.size.toLong())
+        // 带内容哈希的构建产物可以长缓存；index.html 每次都校验，保证升级后立刻生效
+        resp.addHeader(
+            "Cache-Control",
+            if (rel.startsWith("assets/")) "public, max-age=31536000, immutable" else "no-cache",
+        )
+        return resp
+    }
+
+    private val MIME = mapOf(
+        "html" to "text/html; charset=utf-8",
+        "js" to "text/javascript; charset=utf-8",
+        "mjs" to "text/javascript; charset=utf-8",
+        "css" to "text/css; charset=utf-8",
+        "json" to "application/json; charset=utf-8",
+        "svg" to "image/svg+xml",
+        "png" to "image/png",
+        "jpg" to "image/jpeg",
+        "webp" to "image/webp",
+        "ico" to "image/x-icon",
+        "woff" to "font/woff",
+        "woff2" to "font/woff2",
+        "map" to "application/json",
+        "txt" to "text/plain; charset=utf-8",
+    )
+
+    /* ---- 响应工具 ---- */
+
+    private fun ok(o: JSONObject): Response = fixed(Status.OK, "application/json; charset=utf-8", o.toString())
+
+    private fun error(status: Response.IStatus, message: String): Response =
+        fixed(status, "application/json; charset=utf-8", JSONObject().put("error", message).toString())
+
+    private fun fixed(status: Response.IStatus, mime: String, text: String): Response =
+        newFixedLengthResponse(status, mime, text).apply {
+            // 界面与 /api 同源，本不需要跨域；只放行自己的地址，挡掉其他网页的跨站调用
+            addHeader("Access-Control-Allow-Origin", ORIGIN)
+            addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            addHeader("Access-Control-Allow-Headers", "Content-Type")
+            addHeader("Vary", "Origin")
+        }
 }
