@@ -3,7 +3,10 @@ name: Android APK
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['v*']
+  pull_request:
+    branches: [main]
 
 jobs:
   build:
@@ -31,11 +34,23 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      # 媒体校验拿 ffmpeg 当参考实现（逐帧比对自研封装器的产物）
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Android unit tests (JVM)
+        run: node scripts/android-gradle.mjs :app:testDebugUnitTest --no-daemon
+
+      # 自研 MP4 封装器的产物必须与 ffmpeg 逐帧一致（带 B 帧的视频、分片 MP4、HLS 的 fMP4）
+      - name: MP4 muxer vs ffmpeg (frame by frame)
+        run: node tests/android-media-check.mjs
+
       - name: Build debug APK
         working-directory: android
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Rename with version
         run: |
