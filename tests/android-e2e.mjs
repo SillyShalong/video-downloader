@@ -31,6 +31,7 @@ const ADB =
   (SDK ? path.join(SDK, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb') : 'adb');
 const YTDLP = process.env.YTDLP || path.join(REPO, 'bin', 'yt-dlp.exe'); // 电脑端取参考流用
 const PKG = 'com.sillyshalong.videodownloader';
+const APP_LABEL = 'Video Downloader'; // 应用名（系统「无响应」提示的标题里会带它）
 const ACTIVITY = `${PKG}/.MainActivity`;
 const API_PORT = 18977; // 宿主端口 → 设备 8977
 const DEVTOOLS_PORT = 9333;
@@ -303,6 +304,8 @@ export async function connect() {
           `点击 ${label} 失败：实际点到了 ${got.target}（屏幕坐标 ${x},${y}，点击时 scrollY=${got.scrollY} 视口高 ${got.innerHeight}）`,
         );
       }
+      // 点击被挡住：多半是系统弹了「无响应」提示盖在 App 上面，收掉再试
+      if (dismissSystemAlerts()) await sleep(800);
       if (attempt >= 3) throw new Error(`点击 ${label} 失败：点了 3 次，页面一次点击事件都没收到（系统输入被别的东西拦住了）`);
       await sleep(300);
     }
@@ -390,9 +393,11 @@ export async function relaunch(h) {
   await sleep(800); // 等 SSE 连上并拿到初始快照
 }
 
-/** 清空页面状态（输入框/弹窗），任务列表保持服务端数据 */
+/** 清空页面状态（输入框/弹窗/保存目录），任务列表保持服务端数据 */
 export async function resetUi(c) {
-  await c.evaluate('localStorage.removeItem("vd.server"); location.reload(); true');
+  // 保存目录也归位到默认：上一轮半路失败时可能停在用户所选目录上，后面的用例就会把文件下到别处。
+  // 需要所选目录的用例（选目录）自己从头选一遍。
+  await c.evaluate('localStorage.removeItem("vd.server"); localStorage.removeItem("vd.outdir"); location.reload(); true');
   await waitFor('reload 后页面就绪', () => c.evaluate('!!document.querySelector("#btn") && !!document.querySelector("#input")'), { timeout: 20000 });
   await sleep(600);
   c.net.reset();
@@ -407,10 +412,18 @@ const taskIds = async () => new Set((await api.get('/api/tasks')).tasks.map((t) 
 
 /** 真实操作：点输入框、键入链接（adb 键盘事件），等界面识别出站点 */
 async function typeInto(c, url) {
-  await c.tap('#input');
-  await sleep(400);
-  await c.evaluate(`(() => { const ta = document.querySelector('#input'); ta.focus(); document.execCommand('selectAll'); })()`);
-  await c.typeText(url);
+  for (let attempt = 1; ; attempt++) {
+    await c.tap('#input');
+    await sleep(400);
+    await c.evaluate(`(() => { const ta = document.querySelector('#input'); ta.focus(); document.execCommand('selectAll'); })()`);
+    await c.typeText(url);
+    // 系统一卡，adb 发的键盘事件会丢字（链接缺几个字符 → 站点报「链接无效」，看着像 App 的问题）。
+    // 所以读回输入框核对，不一致就全选重输。
+    const typed = await c.evaluate(`document.querySelector('#input').value`);
+    if (typed === url) break;
+    if (attempt >= 3) throw new Error(`输入链接后输入框内容不一致（应输入 ${url.length} 个字符，框里只有 ${typed.length} 个）: ${typed}`);
+    console.log(`    （输入时丢了字符：${typed.length}/${url.length}，重输）`);
+  }
   await waitFor('出现站点识别徽章', () => c.evaluate(`document.querySelectorAll('.detected .ant-tag').length > 0`), { timeout: 10000 });
 }
 
@@ -624,8 +637,26 @@ async function closePicker() {
 
 /** 收掉可能还开着的系统界面，让 App 回到最前面 */
 async function recoverUi() {
+  dismissSystemAlerts();
   if (uiFind(useBtn)) await closePicker();
   adb(['shell', 'am', 'start', '-n', ACTIVITY], { allowFail: true });
+}
+
+/**
+ * 收掉挡在 App 前面的系统「无响应」提示（"System UI isn't responding" 之类）。
+ * 模拟器跑久了系统界面会卡出这种框，它一出现 App 就收不到任何点击，后面的用例会全军覆没。
+ * 如果卡住的正是 App 自己，不点「等待」—— 那是真问题，应该让用例失败。
+ * @returns 是否点掉了
+ */
+function dismissSystemAlerts() {
+  const wait = uiFind((n) => n['resource-id'] === 'android:id/aerr_wait');
+  if (!wait) return false;
+  // 标题形如 "System UI isn't responding"（有些系统上这个标题节点没有固定 id，按文字认）
+  const ours = uiFind((n) => (n['resource-id'] === 'android:id/alertTitle' || n.class === 'android.widget.TextView') && (n.text || '').includes(APP_LABEL));
+  if (ours) return false;
+  uiTap(wait);
+  console.log('    （系统弹了「… isn\'t responding」提示，已点「等待」）');
+  return true;
 }
 
 /** 在已经打开的选择器里选「下载/VD_E2E」并确认（第一次运行时顺手把文件夹建出来）；返回页面上回填的目录 */
@@ -842,14 +873,21 @@ test('settings: 打开设置 → 保存 HLS 站点域名（自动归一化）→
   await waitFor('设置面板展开', () => c.evaluate(`document.querySelector('#settings').classList.contains('open')`), { timeout: 8000 });
 
   // HLS 站点：带协议、路径、大小写混写的域名应被归一化成纯域名
-  await c.tap('#hls-input');
-  await sleep(400);
-  await c.evaluate(`(() => { const el = document.querySelector('#hls-input'); el.focus(); el.select(); })()`);
-  await c.typeText('Example.COM/path');
-  adb(['shell', 'input', 'keyevent', '66']); // 换行
-  await sleep(300);
-  await c.typeText('stream.example.org');
-  await sleep(300);
+  // （输入后读回核对：系统卡顿时 adb 的键盘事件会丢字，不一致就全选重输）
+  const domainsText = 'Example.COM/path\nstream.example.org';
+  for (let attempt = 1; ; attempt++) {
+    await c.tap('#hls-input');
+    await sleep(400);
+    await c.evaluate(`(() => { const el = document.querySelector('#hls-input'); el.focus(); el.select(); })()`);
+    await c.typeText('Example.COM/path');
+    adb(['shell', 'input', 'keyevent', '66']); // 换行
+    await sleep(300);
+    await c.typeText('stream.example.org');
+    await sleep(300);
+    const typed = (await c.evaluate(`document.querySelector('#hls-input').value`)).replace(/\r/g, '');
+    if (typed === domainsText) break;
+    if (attempt >= 3) throw new Error(`设置里的域名输入后内容不一致（应输入 ${JSON.stringify(domainsText)}，框里是 ${JSON.stringify(typed)}）`);
+  }
   await c.tap('#hls-save');
   await waitFor('服务端保存了归一化后的域名', async () => JSON.stringify((await api.get('/api/config')).hlsSites) === JSON.stringify(['example.com', 'stream.example.org']), {
     timeout: 10000,
