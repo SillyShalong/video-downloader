@@ -12,7 +12,8 @@ import java.io.RandomAccessFile
  *  - sample entry（avcC / esds / hvcC …）按原始字节整体复制，所以不需要理解具体编码；
  *  - 解码时间、显示偏移、编辑列表全部保留，带 B 帧的视频和带编码预滚的音频
  *    都能与源文件逐帧、逐采样对齐；
- *  - 渐进式 MP4（普通的 mp4 / m4a）和分片 MP4（fMP4，YouTube 的视频流就是这种）都能读。
+ *  - 渐进式 MP4（普通的 mp4 / m4a）和分片 MP4（fMP4，YouTube 的视频流就是这种）都能读，
+ *    也包括两者混用的：sample 表里先放一段、后面再接分片；
  *
  * 加密的流会直接抛 IOException。
  */
@@ -131,16 +132,33 @@ class Mp4Reader(file: File) : Closeable {
             }
         }
 
-        // 2) sample：渐进式在 stbl 里，分片式在各个 moof 里
+        // 2) sample：渐进式全在 stbl 里；分片式在各个 moof 里 —— 但分片文件的 stbl 里也可能先放了一部分
         val fragmented = top.any { it.type == "moof" }
         for ((trak, b) in parsed) {
             val stbl = Boxes.child(raf, trak, "mdia")?.let { Boxes.child(raf, it, "minf") }?.let { Boxes.child(raf, it, "stbl") }
                 ?: throw IOException("轨道缺少 sample table（stbl）")
-            if (fragmented) ensureNotEncrypted(b, stbl) else readProgressive(b, stbl)
+            if (!fragmented) {
+                readProgressive(b, stbl)
+                continue
+            }
+            ensureNotEncrypted(b, stbl)
+            // sample 表不一定为空：ffmpeg 用 frag_keyframe 转封装带 B 帧的视频时，开头一段放在普通的 sample 表里，
+            // 分片从第 1 秒才接上（tfdt 从 1 秒起）。这部分在媒体时间轴上排在全部分片之前，必须先读，
+            // 否则会整整丢掉一段画面和声音。
+            if (initialSamples(stbl) > 0) readProgressive(b, stbl)
         }
         if (fragmented) for (moof in top.filter { it.type == "moof" }) readFragment(moof, parsed.map { it.second })
         tracks = parsed.map { it.second.build() }
     }
+
+    /** stbl 的 sample 表里描述了多少个 sample（纯分片文件里是 0） */
+    private fun initialSamples(stbl: BoxRef): Int =
+        Boxes.child(raf, stbl, "stsz")?.let { box ->
+            val r = ByteReader(Boxes.payload(raf, box))
+            r.u32()
+            r.u32()
+            r.u32().toInt()
+        } ?: 0
 
     /** 读取第 [i] 个 sample 的数据到 [buf]（[buf] 要不小于 [Track.sizes]），返回读取的字节数 */
     fun readSample(track: Track, i: Int, buf: ByteArray): Int {
@@ -398,8 +416,12 @@ class Mp4Reader(file: File) : Closeable {
                     b.cts.add(cts)
                     b.sizes.add(size)
                     b.offsets.add(offset)
-                    // sample_flags 的第 20 位（0x100000）是 is_non_sync_sample
-                    b.sync.add(sampleFlags and 0x100000L == 0L)
+                    // 关键帧：sample_flags 里表示「非关键帧」的位置了位就不是。规范把 is_non_sync_sample 写在 bit 22（0x400000），
+                    // 但实测 ffmpeg 写的非关键帧是 0x01010000、YouTube 写的是 0x00010000 —— 都落在 bit 16 上，
+                    // 而关键帧（0x02000000 / 0x00000000）这两位都是 0。所以两位都认。
+                    // （以前认的是 bit 20：所有 sample 都落在同一边，分片来源的每一帧都被写成了关键帧，拖动进度条会花屏。）
+                    val nonSync = sampleFlags and (0x00010000L or 0x00400000L) != 0L
+                    b.sync.add(!nonSync)
                     b.desc.add(descIndex)
                     offset += size
                     dts += step

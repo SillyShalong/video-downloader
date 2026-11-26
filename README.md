@@ -11,7 +11,7 @@
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)](https://react.dev/)
 [![Ant Design](https://img.shields.io/badge/Ant_Design-6-1677ff?logo=antdesign&logoColor=white)](https://ant.design/)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-63%20desktop%20·%2038%20Android-brightgreen)](#-automated-tests)
+[![Tests](https://img.shields.io/badge/tests-63%20desktop%20·%2039%20Android-brightgreen)](#-automated-tests)
 
 **Desktop app + CLI + Android app** · Quality selection · Real-time speed · Pause/Cancel · Download history · H.264 output · Bilingual UI
 
@@ -121,14 +121,14 @@ npm test                    # Desktop: build frontend + all tests (63)
 npm run test:gui            # Desktop GUI regression (headless Edge drives the real page)
 npm run test:network        # Desktop: enable external-network tests
 
-npm run test:android        # Android: JVM unit tests (38) — needs JDK 21 + Android SDK
+npm run test:android        # Android: JVM unit tests (39) — needs JDK 21 + Android SDK
 npm run test:android:media  # Android: muxer vs ffmpeg, frame by frame (on the PC, no device)
 npm run test:android:e2e    # Android: real-GUI E2E on an emulator (adb taps/typing, ffmpeg verifies files); needs ANDROID_HOME or adb on PATH
 ```
 
 - **Desktop (63)**: site detection, share-text parsing, download args (H.264 lock regression), proxy validation, explorer command line, download task pipeline (SSE → disk), retry/pause/cancel, history persistence, multi-source selection, anti-flicker, modal close, remote-mode errors.
-- **Android JVM (38)**: MP4 writer/reader round-trips (timestamps, keyframes, edit lists, B-frames), m3u8 parsing, MPEG-TS/PES construction, ADTS splitting, AES-128 decryption, URL/site detection, filename sanitizing.
-- **Android media check**: our muxer's output must match `ffmpeg -c copy` *frame by frame* (picture hash + presentation time), audio sample-exact, A/V start alignment, zero decode errors — on synthetic media (with B-frames), fragmented MP4, HLS fMP4, and with `--yt` real YouTube streams.
+- **Android JVM (39)**: MP4 writer/reader round-trips (timestamps, keyframes, edit lists, B-frames, fragmented files whose sample table is not empty), m3u8 parsing, MPEG-TS/PES construction, ADTS splitting, AES-128 decryption, URL/site detection, filename sanitizing.
+- **Android media check**: our muxer's output must match `ffmpeg -c copy` *frame by frame* (picture hash + presentation time + keyframe table), audio sample-exact, A/V start alignment, zero decode errors — on synthetic media (with B-frames), fragmented MP4, HLS fMP4, and with `--yt` real YouTube streams.
 - **Android E2E (19 scenarios)**: on a real emulator UI — launch, Bilibili/YouTube/HLS downloads (files pulled and verified with ffmpeg), system folder picker (starts in the current folder, picking a folder, cancelling, invalid folder), multi-part selection, pause/resume, resume after the app is killed, cancel, detail drawer, settings, delete history.
 
 ## 🛠 Development

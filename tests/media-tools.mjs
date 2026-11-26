@@ -2,7 +2,7 @@
 // 用 ffmpeg 而不是 ffprobe：项目里只随包带了 ffmpeg.exe，而且 ffmpeg 的解码器就是事实上的参考实现。
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -105,7 +105,68 @@ export function assertSameVideo(a, b, label, maxReport = 3) {
     else if (Math.abs(ta - tb) >= 0.001) diffs.push(`第 ${i} 帧显示时刻不同（相对首帧）: ${ta.toFixed(5)} vs ${tb.toFixed(5)}`);
   }
   assert.equal(diffs.length, 0, `${label}: ${diffs.length}/${fa.length} 帧不一致\n  ` + diffs.slice(0, maxReport).join('\n  '));
+  assertSameKeyframes(a, b, label);
   return fa.length;
+}
+
+/**
+ * 第一个视频轨的关键帧表（stss），返回关键帧的帧序号（从 0 起）。没有 stss 表示全是关键帧。
+ * 直接读文件里的 box，不经过 ffmpeg：这一项比的就是「我们写进文件的关键帧标记」和「ffmpeg 写的」是否一样。
+ * 分片文件（带 moof）的关键帧标记在各分片里，这里不解析，返回 null。
+ */
+export function keyframeTable(file) {
+  const b = readFileSync(file);
+  const u32 = (p) => b.readUInt32BE(p);
+  const u64 = (p) => Number(b.readBigUInt64BE(p));
+  const children = (start, end) => {
+    const out = [];
+    for (let p = start; p + 8 <= end; ) {
+      let size = u32(p);
+      let head = 8;
+      if (size === 1) { size = u64(p + 8); head = 16; } else if (size === 0) size = end - p;
+      if (size < 8) break;
+      out.push({ type: b.toString('latin1', p + 4, p + 8), payload: p + head, end: p + size });
+      p += size;
+    }
+    return out;
+  };
+  const child = (boxes, type) => boxes.find((x) => x.type === type);
+  const top = children(0, b.length);
+  const moov = child(top, 'moov');
+  assert.ok(moov, `${path.basename(file)}: 没有 moov`);
+  if (top.some((x) => x.type === 'moof')) return null;
+  for (const trak of children(moov.payload, moov.end).filter((x) => x.type === 'trak')) {
+    const mdia = child(children(trak.payload, trak.end), 'mdia');
+    const hdlr = mdia && child(children(mdia.payload, mdia.end), 'hdlr');
+    if (!hdlr || b.toString('latin1', hdlr.payload + 8, hdlr.payload + 12) !== 'vide') continue;
+    const minf = child(children(mdia.payload, mdia.end), 'minf');
+    const stbl = child(children(minf.payload, minf.end), 'stbl');
+    const boxes = children(stbl.payload, stbl.end);
+    const stsz = child(boxes, 'stsz');
+    const count = u32(stsz.payload + 8);
+    const stss = child(boxes, 'stss');
+    if (!stss) return Array.from({ length: count }, (_, i) => i);
+    const n = u32(stss.payload + 4);
+    return Array.from({ length: Math.min(n, count) }, (_, i) => u32(stss.payload + 8 + i * 4) - 1);
+  }
+  return [];
+}
+
+/**
+ * 断言两个文件的关键帧表一致。逐帧比对看不出这一项 —— 把所有帧都标成关键帧，画面照样逐帧相同、照样能从头播，
+ * 但播放器拖动进度条时会从非关键帧开始解码，花屏到下一个关键帧为止。
+ */
+export function assertSameKeyframes(a, b, label) {
+  const ka = keyframeTable(a);
+  const kb = keyframeTable(b);
+  if (!ka || !kb) return; // 分片文件的关键帧不在 stss 里；或者文件里没有视频轨
+  const firstDiff = ka.findIndex((x, i) => x !== kb[i]);
+  assert.ok(
+    ka.length === kb.length && firstDiff < 0,
+    `${label}: 关键帧表不一致 —— ${path.basename(a)} 有 ${ka.length} 个关键帧，参考有 ${kb.length} 个` +
+      (firstDiff >= 0 ? `；从第 ${firstDiff} 项起不同（${ka[firstDiff]} vs ${kb[firstDiff]}）` : '') +
+      `\n  参考: ${kb.slice(0, 12).join(', ')}${kb.length > 12 ? ', …' : ''}`,
+  );
 }
 
 /**

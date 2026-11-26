@@ -293,6 +293,93 @@ class Mp4MuxerTest {
         assertTrue("目录里没有可用的媒体文件: $dir", produced > 0)
     }
 
+    /**
+     * 分片 MP4 的 sample 表不一定为空：ffmpeg 用 frag_keyframe 转封装带 B 帧的视频时，开头一段放在普通的
+     * sample 表里，分片从后面才接上（tfdt 接着表里最后一个 sample 的时间）。表里的 sample 在时间轴上排在
+     * 全部分片之前，要一起读出来 —— 以前只读分片，这种文件会整整丢掉开头一段画面和声音。
+     *
+     * 同时核对分片里 sample 的关键帧标志：ffmpeg 写非关键帧用 0x01010000、YouTube 用 0x00010000，
+     * 关键帧分别是 0x02000000 和 0x00000000。以前这里认错了位，结果所有帧都被当成关键帧。
+     *
+     * 这里手工拼一个最小的「sample 表 3 个 + 分片 2 个」的文件，两种写法各验一遍。
+     */
+    @Test
+    @Throws(Exception::class)
+    fun `分片文件里 sample 表不为空时，表里的 sample 排在分片前面一起读出来，关键帧标志也认得`() {
+        val ftyp = box("ftyp", words(0x69736F6D, 512))
+        val mvhd = box("mvhd", full(0, 0, words(0, 0, 1000, 0) + ByteArray(80)))
+        val tkhd = box("tkhd", full(0, 0, words(0, 0, 1, 0, 0) + ByteArray(60)))
+        val hdlr = box("hdlr", full(0, 0, ByteWriter().apply { u32(0); fourcc("vide"); zeros(12) }.toBytes()))
+
+        // moov 里的 sample 表：3 个 sample（时长各 10），数据在紧跟着的 mdat 里；没有 stss，都算关键帧
+        fun moov(firstSampleOffset: Int, defaultFlags: Int): ByteArray {
+            val stbl = box(
+                "stbl",
+                box("stsd", full(0, 0, words(1) + entry("avc1"))) +
+                    box("stts", full(0, 0, words(1, 3, 10))) +
+                    box("stsz", full(0, 0, words(0, 3, 3, 4, 5))) +
+                    box("stsc", full(0, 0, words(1, 1, 3, 1))) +
+                    box("stco", full(0, 0, words(1, firstSampleOffset))),
+            )
+            val mdia = box("mdia", box("mdhd", full(0, 0, words(0, 0, 1000, 0))) + hdlr + box("minf", stbl))
+            // trex：分片里 sample 的默认值 —— 时长 10、标志取 [defaultFlags]
+            val mvex = box("mvex", box("trex", full(0, 0, words(1, 1, 10, 0, defaultFlags))))
+            return box("moov", mvhd + box("trak", tkhd + mdia) + mvex)
+        }
+
+        val mdat1 = box("mdat", "aaa".toByteArray() + "bbbb".toByteArray() + "ccccc".toByteArray())
+        val mdat2 = box("mdat", "dd".toByteArray() + "eeeeee".toByteArray())
+
+        // 一个分片：2 个 sample，解码时间从 30 起接着表里的往下走；第一个是关键帧（first_sample_flags），第二个取默认标志
+        fun moof(dataOffset: Int, firstFlags: Int): ByteArray {
+            val traf = box(
+                "traf",
+                box("tfhd", full(0, 0x020000, words(1))) + // default-base-is-moof：数据偏移以 moof 开头为基准
+                    box("tfdt", full(1, 0, ByteWriter().apply { u64(30) }.toBytes())) +
+                    // trun 给了数据偏移、第一个 sample 的标志和每个 sample 的大小
+                    box("trun", full(0, 0x205, words(2, dataOffset, firstFlags, 2, 6))),
+            )
+            return box("moof", box("mfhd", full(0, 0, words(1))) + traf)
+        }
+
+        for ((defaultFlags, firstFlags) in listOf(0x01010000 to 0x02000000, 0x00010000 to 0x00000000)) {
+            val head = ftyp + moov(ftyp.size + moov(0, defaultFlags).size + 8, defaultFlags) + mdat1
+            val f = File.createTempFile("hybrid-mp4", ".mp4")
+            try {
+                val bytes = head + moof(moof(0, firstFlags).size + 8, firstFlags) + mdat2 // 分片的数据在 moof 之后的 mdat 里
+                FileOutputStream(f).use { it.write(bytes) }
+                Mp4Reader(f).use { r ->
+                    val t = r.tracks.single()
+                    assertEquals("vide", t.handler)
+                    assertEquals(5, t.sampleCount)
+                    assertArrayEquals(longArrayOf(3, 4, 5, 2, 6), t.sizes)
+                    assertArrayEquals(longArrayOf(0, 10, 20, 30, 40), t.dts)
+                    // 表里的没有 stss（全是关键帧）；分片里第一个是关键帧，第二个取默认的非关键帧标志
+                    assertTrue(
+                        "关键帧标志（默认 0x%08x / 首个 0x%08x）".format(defaultFlags, firstFlags),
+                        t.sync.contentEquals(booleanArrayOf(true, true, true, true, false)),
+                    )
+                    val buf = ByteArray(16)
+                    val texts = (0 until t.sampleCount).map { i ->
+                        val n = r.readSample(t, i, buf)
+                        String(buf, 0, n, Charsets.ISO_8859_1)
+                    }
+                    assertEquals(listOf("aaa", "bbbb", "ccccc", "dd", "eeeeee"), texts)
+                }
+            } finally {
+                f.delete()
+            }
+        }
+    }
+    private fun box(type: String, payload: ByteArray): ByteArray =
+        ByteWriter(8 + payload.size).apply { u32((8 + payload.size).toLong()); fourcc(type); bytes(payload) }.toBytes()
+
+    private fun full(version: Int, flags: Int, payload: ByteArray): ByteArray =
+        ByteWriter(4 + payload.size).apply { u8(version); u24(flags); bytes(payload) }.toBytes()
+
+    /** 每个数字写成 4 字节大端 */
+    private fun words(vararg v: Int): ByteArray = ByteWriter(4 * v.size).apply { v.forEach { u32(it.toLong()) } }.toBytes()
+
     /** 最小可用的 sample entry（只有 box 头和类型，内容对测试无关紧要） */
     private fun entry(type: String): ByteArray = ByteWriter(16).apply { u32(16); fourcc(type); u32(0); u32(0) }.toBytes()
 }

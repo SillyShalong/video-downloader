@@ -52,8 +52,9 @@ function generate() {
   if (!existsSync(a)) ff(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100:duration=8', '-ac', '2', '-c:a', 'aac', '-b:a', '128k', a]);
   if (!existsSync(s)) ff(['-i', v, '-i', a, '-c', 'copy', s]);
   // 分片 MP4（音视频两条轨在同一个文件的多个分片里）：YouTube 的视频流、HLS 的 fMP4 都是这种格式
+  //（不要加 empty_moof：新版 ffmpeg 已经去掉这个选项，加上会直接报错）
   const frag = path.join(DIR, 'frag.single.mp4');
-  if (!existsSync(frag)) ff(['-i', s, '-c', 'copy', '-movflags', '+frag_keyframe+empty_moof+default_base_moof', frag]);
+  if (!existsSync(frag)) ff(['-i', s, '-c', 'copy', '-movflags', '+frag_keyframe+default_base_moof', frag]);
   // HLS 的 fMP4：初始化段 + 若干分段文件首尾相接（每个分段自带 styp / sidx / moof / mdat）。
   // ffmpeg 的 HLS 解复用器拼接路径时不认反斜杠，这个目录下的路径统一用正斜杠手工拼
   const hlsDir = `${DIR}/hls-fmp4`;
