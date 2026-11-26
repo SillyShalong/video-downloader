@@ -214,7 +214,19 @@ export async function connect() {
   /** 从 [from] 起，是否有一次点击落在选择器匹配的元素（或它的子元素）上 */
   const clickLanded = (selector, from) => evaluate(`window.__clickTargets.slice(${from}).some((el) => el && el.closest(${JSON.stringify(selector)}))`);
 
-  const screen = JSON.parse(page.description); // {screenX, screenY, width, height}
+  /**
+   * WebView 在屏幕上的位置（点击坐标换算用）：{screenX, screenY, width, height}。
+   * DevTools 的 page.description 在页面刚创建、WebView 还没挂到窗口上时全是 0 —— 拿 0 去换算，
+   * 点击会整体偏上半个状态栏（看着像点到了别的控件）。所以它没给全时，改从系统的无障碍树里读 WebView 的边界。
+   */
+  const webViewRect = async () => {
+    const d = JSON.parse(page.description);
+    if (d.width > 0 && d.height > 0) return d;
+    const n = uiFind((x) => x.class === 'android.webkit.WebView' && x.package === PKG);
+    if (!n || n.x2 <= n.x1 || n.y2 <= n.y1) return false;
+    return { screenX: n.x1, screenY: n.y1, width: n.x2 - n.x1, height: n.y2 - n.y1 };
+  };
+  const screen = await waitFor('拿到 WebView 在屏幕上的位置', webViewRect, { timeout: 20000, interval: 500 });
   const dpr = await evaluate('window.devicePixelRatio');
 
   let tokens = 0;
@@ -636,10 +648,12 @@ async function closePicker() {
 }
 
 /** 收掉可能还开着的系统界面，让 App 回到最前面 */
-async function recoverUi() {
+async function recoverUi(c) {
   dismissSystemAlerts();
   if (uiFind(useBtn)) await closePicker();
   adb(['shell', 'am', 'start', '-n', ACTIVITY], { allowFail: true });
+  // 页面也复位：上一个用例半路失败时可能留着没关的弹窗（选集窗口之类），它的遮罩会挡住后面的点击
+  if (c) await c.evaluate('localStorage.removeItem("vd.outdir"); location.reload(); true').catch(() => {});
 }
 
 /**
@@ -1091,17 +1105,20 @@ test('multi-part-bili: 多 P 视频 → 弹出选集窗口 → 只勾选 P2 → 
     c.evaluate(
       `[...document.querySelectorAll('.ant-modal .ant-list-item')].map((li) => ({ title: li.querySelector('.ant-list-item-meta-title')?.textContent ?? '', checked: li.querySelector('input[type=checkbox]')?.checked }))`,
     );
+  // 分 P 的数量以视频当前为准（UP 主会往后加）：只要求至少两个，第二项是 P2
   const items = await readItems();
-  assert.equal(items.length, 2, '应列出两个分 P');
+  assert.ok(items.length >= 2, `至少应有两个分 P，实际 ${items.length}`);
   assert.ok(items.every((x) => x.checked), '默认全选');
   assert.ok(items[1].title.includes('P2'), '第二项应是 P2：' + items.map((x) => x.title).join(' | '));
   assert.equal((await taskIds()).size, before.size, '没确认之前不应创建任务');
 
-  // 真实点击：取消勾选 P1
-  await c.tap('.ant-modal .ant-list-item:nth-of-type(1) .ant-checkbox');
-  await waitFor('P1 被取消勾选', async () => {
+  // 真实点击：先「全不选」，再勾上 P2 —— 不管这个视频有几个分 P，选中的都只有 P2
+  await c.tapText('全不选');
+  await waitFor('全部取消勾选', async () => (await readItems()).every((x) => !x.checked), { timeout: 5000 });
+  await c.tap('.ant-modal .ant-list-item:nth-of-type(2) .ant-checkbox');
+  await waitFor('只勾选了 P2', async () => {
     const now = await readItems();
-    return !now[0].checked && now[1].checked;
+    return now[1].checked && now.filter((x) => x.checked).length === 1;
   }, { timeout: 5000 });
 
   // 点「下载选中（1 个）」
@@ -1113,10 +1130,12 @@ test('multi-part-bili: 多 P 视频 → 弹出选集窗口 → 只勾选 P2 → 
   assert.ok(done.title?.includes('P2'), `任务应是 P2：${done.title}`);
   assert.ok(done.file.includes('P2'), `文件名应带 P2：${done.file}`);
   const file = checkDownloaded(done, DEFAULT_DIR, since, 'bili-p2.mp4', 'B站 P2');
-  console.log(`    选集里的两项: ${items.map((x) => x.title).join(' | ')}\n    文件: ${done.file} (${file.size} 字节)`);
+  console.log(`    选集里的 ${items.length} 项: ${items.map((x) => x.title).join(' | ')}\n    文件: ${done.file} (${file.size} 字节)`);
 });
 
 test('invalid-dir: 所选目录已失效（被删除或权限被收回）→ 任务失败并说明原因', async (h) => {
+  // 上一个用例失败时可能留着没关的弹窗（比如选集窗口），它的遮罩会挡住后面的点击：先把页面复位
+  await resetUi(h.c);
   const r = await api.post('/api/download', {
     input: URLS.bili,
     quality: null,
@@ -1202,8 +1221,8 @@ async function main() {
       const taps = h.c.taps.slice(-5).map((k) => `${k.label} @${k.css.join(',')} ${k.landed ? '✓' : '✗ ' + JSON.stringify(k.clicks)}`);
       if (taps.length) console.log('    最近的点击:\n      ' + taps.join('\n      '));
     }
-    // 上一个用例半路失败时，系统界面（文件夹选择器、授权框）可能还开着，会挡住后面所有的点击
-    await recoverUi().catch(() => {});
+    // 上一个用例半路失败时，系统界面（文件夹选择器、授权框）或页面上的弹窗可能还开着，会挡住后面所有的点击
+    await recoverUi(h.c).catch(() => {});
   }
   h.c.ws.close();
   await h.hls?.close();
