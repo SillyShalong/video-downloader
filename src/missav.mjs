@@ -5,6 +5,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withPage, evalInPage } from './headless-edge.mjs';
+import { SOURCE_PRINT_ARGS, createSourceCollector, emitSource } from './stream-source.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -107,6 +108,7 @@ export async function downloadMissav(url, opts = {}) {
     '--newline', '--progress',
     '--no-simulate',
     '--print', 'after_move:%(filepath)s',
+    ...SOURCE_PRINT_ARGS, // 下载前输出选中的格式：视频流真正的地址（域名 / IP），详情里显示
     '--add-headers', `Referer: ${url}`,
     '--add-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
   ];
@@ -123,6 +125,8 @@ export async function downloadMissav(url, opts = {}) {
       },
     });
     let buf = '';
+    // 视频流地址：yt-dlp 在下载前打印，一组收齐就发给界面（不等它，下载照常进行）
+    const feedSource = createSourceCollector();
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
       buf += chunk;
@@ -131,6 +135,11 @@ export async function downloadMissav(url, opts = {}) {
       for (const l of lines) {
         const t = l.trim();
         if (!t) continue;
+        const streams = feedSource(t);
+        if (streams !== undefined) {
+          if (streams) emitSource(onEvent, streams);
+          continue;
+        }
         const m = t.match(/^\[download\]\s+(\d+(?:\.\d+)?)%/);
         if (m) {
           // 解析速度/ETA/总量（与主引擎 parseProgressDetail 同逻辑，避免循环依赖）

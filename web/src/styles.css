@@ -186,6 +186,16 @@ details.log pre {
   font-family: Consolas, monospace; line-height: 1.6;
 }
 
+/* 详情：视频流来源（域名 + 解析出的 IP） */
+.src-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.src-stream { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 10px; padding: 8px 10px; }
+.src-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.src-host { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px; margin-top: 4px; }
+.src-kind { color: rgba(255, 255, 255, 0.38); font-size: 11px; flex: none; }
+.src-ips { font-family: Consolas, monospace; font-size: 11.5px; color: #6d9eff; word-break: break-all; }
+.src-url { margin-top: 2px; font-family: Consolas, monospace; font-size: 11px; }
+.src-note { color: rgba(255, 255, 255, 0.38); font-size: 11px; line-height: 1.5; }
+
 .empty {
   border: 1.5px dashed rgba(255, 255, 255, 0.09); border-radius: 14px;
   padding: 26px 20px; background: rgba(255, 255, 255, 0.012);

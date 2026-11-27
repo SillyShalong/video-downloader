@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { matchSite, extractUrls } from '../src/sites.mjs';
-import { buildArgs } from '../src/downloader.mjs';
+import { buildArgs, parseProgressDetail } from '../src/downloader.mjs';
+import { SOURCE_PRINT_ARGS, annotateIps, createSourceCollector, emitSource, streamsFromUrls, summarizeSources } from '../src/stream-source.mjs';
 import { isValidProxy } from '../src/config.mjs';
 import { buildExplorerArgs } from '../src/server.mjs';
-import { parseProgressDetail } from '../src/downloader.mjs';
 
 // ---------- yt-dlp 进度行解析（速度/ETA/总量） ----------
 test('parseProgressDetail: 常见进度行格式', () => {
@@ -148,6 +148,152 @@ test('buildArgs: 多视频源 playlistItems 映射为 --playlist-items', () => {
   // 空数组/不传不添加
   assert.equal(buildArgs('https://youtu.be/x', {}).indexOf('--playlist-items'), -1);
   assert.equal(buildArgs('https://youtu.be/x', { playlistItems: [] }).indexOf('--playlist-items'), -1);
+});
+
+// ---------- 视频流来源（详情里显示的真正下载地址：域名 + 解析出的 IP） ----------
+// 下面几组行是 yt-dlp 真实输出的样子（带标记前缀，一个视频一组，最后一行到了才算收齐）
+const CDN = 'rr5---sn-a5meknd6.googlevideo.com';
+const YT_MERGED = [
+  `__SRC_FORMATS__[{"format_id":"137","format_note":"1080p","height":1080,"ext":"mp4","vcodec":"avc1.640028","acodec":"none","protocol":"https","url":"https://${CDN}/videoplayback?expire=1&id=oo"},` +
+    `{"format_id":"140","format_note":"audio only","ext":"m4a","vcodec":"none","acodec":"mp4a.40.2","protocol":"https","url":"https://${CDN}/videoplayback?expire=1&id=aa"}]`,
+  '__SRC_URL__NA',
+  '__SRC_URLS__"https://' + CDN + '/videoplayback?expire=1&id=oo\\nhttps://' + CDN + '/videoplayback?expire=1&id=aa"',
+  '__SRC_MANIFEST__NA',
+  '__SRC_INFO__137+140|137 - 1920x1080 (1080p)+140 - audio only (medium)|NA|NA|https+https|mp4',
+];
+const HLS_SINGLE = [
+  '__SRC_FORMATS__NA',
+  '__SRC_URL__https://cdn.example.com/hls/720p/index.m3u8',
+  '__SRC_URLS__["https://cdn.example.com/hls/720p/index.m3u8"]',
+  '__SRC_MANIFEST__https://cdn.example.com/hls/master.m3u8',
+  '__SRC_INFO__900|900 - 1280x720|avc1.64001f|mp4a.40.2|m3u8_native|mp4',
+];
+
+test('stream-source: 合成格式 → 视频、音频各一路，带各自的域名；一组没收齐之前不出结果', () => {
+  const feed = createSourceCollector();
+  for (const line of YT_MERGED.slice(0, -1)) assert.equal(feed(line), null, '没收到最后一行不算收齐');
+  const streams = feed(YT_MERGED[YT_MERGED.length - 1]);
+  assert.equal(streams.length, 2);
+  assert.deepEqual(streams.map((s) => s.role), ['video', 'audio']);
+  assert.deepEqual(streams.map((s) => s.label), ['137 · 1080p · mp4', '140 · m4a']);
+  for (const s of streams) {
+    assert.equal(s.protocol, 'https');
+    assert.equal(s.links.length, 1);
+    assert.equal(s.links[0].kind, 'url');
+    assert.equal(s.links[0].host, CDN);
+    assert.equal(s.links[0].hostname, CDN);
+    assert.equal(s.links[0].ips, null, '刚解析出来时 IP 还没解析');
+  }
+  assert.equal(streams[0].links[0].url, `https://${CDN}/videoplayback?expire=1&id=oo`);
+  assert.equal(streams[1].links[0].url, `https://${CDN}/videoplayback?expire=1&id=aa`);
+});
+
+test('stream-source: 单一格式（直链文件）与分段流（播放列表地址）', () => {
+  const feed = createSourceCollector();
+  // 直接给一个文件地址：format_id 就是扩展名，标签里不重复写
+  for (const l of ['__SRC_FORMATS__NA', '__SRC_URL__http://127.0.0.1:53329/fake.mp4', '__SRC_URLS__"http://127.0.0.1:53329/fake.mp4"', '__SRC_MANIFEST__NA']) feed(l);
+  const [file] = feed('__SRC_INFO__mp4|mp4 - unknown|NA|NA|http|mp4');
+  assert.equal(file.role, 'both');
+  assert.equal(file.label, 'mp4');
+  assert.equal(file.protocol, 'http');
+  assert.equal(file.links[0].kind, 'url');
+  assert.equal(file.links[0].host, '127.0.0.1:53329', '带端口号');
+  assert.equal(file.links[0].ips, null);
+
+  // HLS：地址是这一档的子列表，另有主列表；分段的域名和它们相同，就不再单列
+  for (const l of HLS_SINGLE.slice(0, -1)) feed(l);
+  const [hls] = feed(HLS_SINGLE[HLS_SINGLE.length - 1]);
+  assert.equal(hls.role, 'both');
+  assert.equal(hls.protocol, 'm3u8_native');
+  assert.deepEqual(hls.links.map((l) => [l.kind, l.url]), [
+    ['url', 'https://cdn.example.com/hls/720p/index.m3u8'],
+    ['manifest', 'https://cdn.example.com/hls/master.m3u8'],
+  ]);
+});
+
+test('stream-source: 分段在别的域名上时，每个域名多列一条「分段」', () => {
+  const feed = createSourceCollector();
+  for (const l of [
+    '__SRC_FORMATS__NA',
+    '__SRC_URL__NA',
+    '__SRC_URLS__["https://cdn.example.com/dash/init.mp4","https://seg1.other-cdn.net/a/seg$Number$.m4s","https://seg1.other-cdn.net/b/seg$Number$.m4s","https://seg2.other-cdn.net/x.m4s"]',
+    '__SRC_MANIFEST__https://cdn.example.com/dash/manifest.mpd',
+  ]) {
+    assert.equal(feed(l), null);
+  }
+  const [stream] = feed('__SRC_INFO__900|900 - 1280x720|avc1.64001f|mp4a.40.2|http_dash_segments|mp4');
+  assert.equal(stream.role, 'both');
+  assert.equal(stream.protocol, 'http_dash_segments');
+  assert.deepEqual(stream.links.map((l) => [l.kind, l.host]), [
+    ['manifest', 'cdn.example.com'],
+    // 初始化段和播放列表同域名，不重复列；同一域名下的多个分段模板只记一次
+    ['segment', 'seg1.other-cdn.net'],
+    ['segment', 'seg2.other-cdn.net'],
+  ]);
+});
+
+test('stream-source: 不是来源行的原样放过；yt-dlp 的输出损坏时不抛错（不能影响下载）', () => {
+  const feed = createSourceCollector();
+  assert.equal(feed('[download]  12.3% of   10.00MiB at 1.00MiB/s ETA 00:08'), undefined, '进度行不是来源行');
+  assert.equal(feed('__TITLE__某个标题'), undefined);
+  for (const l of ['__SRC_FORMATS__[{"format_id": "137", "format', '__SRC_URL__NA', '__SRC_URLS__NA', '__SRC_MANIFEST__NA']) feed(l);
+  assert.equal(feed('__SRC_INFO__137|137 - 1080p|avc1|none|https|mp4'), null, 'JSON 被截断：这一组作废');
+  // 作废的下一组照常工作
+  for (const l of HLS_SINGLE.slice(0, -1)) feed(l);
+  assert.equal(feed(HLS_SINGLE[HLS_SINGLE.length - 1]).length, 1);
+});
+
+test('stream-source: 引擎自己拿到的直链（抖音 / 小红书）：第一个是地址，其余是备用地址', () => {
+  assert.deepEqual(streamsFromUrls([]), []);
+  const [stream] = streamsFromUrls(['https://a.example.com/v.mp4', 'https://b.example.com/v.mp4', '', null]);
+  assert.equal(stream.role, 'both');
+  assert.equal(stream.protocol, 'https');
+  assert.deepEqual(stream.links.map((l) => [l.kind, l.host, l.ips]), [
+    ['url', 'a.example.com', null],
+    ['alternate', 'b.example.com', null],
+  ]);
+});
+
+test('stream-source: 补上本机解析出的 IP；IP 字面量不用解析；走代理时只解析代理、不显示账号密码', async () => {
+  const streams = streamsFromUrls(['http://127.0.0.1:8080/a.mp4', 'https://[::1]:443/b.mp4']);
+  const direct = await annotateIps(streams);
+  assert.equal(direct.proxy, null);
+  assert.deepEqual(direct.streams[0].links.map((l) => l.ips), [['127.0.0.1'], ['::1']]);
+  assert.equal(streams[0].links[0].ips, null, '不改传入的对象（先发出去的那份保持「解析中」）');
+
+  const viaProxy = await annotateIps(streams, { proxy: 'http://user:secret@127.0.0.1:7890' });
+  assert.equal(viaProxy.proxy.display, 'http://127.0.0.1:7890');
+  assert.deepEqual(viaProxy.proxy.ips, ['127.0.0.1']);
+  assert.deepEqual(viaProxy.streams[0].links.map((l) => l.ips), [[], []], '视频流的域名由代理那一侧解析，本机不解析');
+});
+
+test('stream-source: 先立刻发一次、IP 解析完再发一次，两次是同一个 id；日志一行列出域名和 IP', async () => {
+  const events = [];
+  emitSource((ev) => events.push(ev), streamsFromUrls(['http://127.0.0.1:9/v.mp4']));
+  assert.equal(events.length, 1, '不等解析就先发');
+  assert.equal(events[0].type, 'source');
+  assert.equal(events[0].streams[0].links[0].ips, null);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(events.length, 2);
+  assert.equal(events[1].sourceId, events[0].sourceId, '接收方据此原地更新，而不是再记一行');
+  assert.deepEqual(events[1].streams[0].links[0].ips, ['127.0.0.1']);
+
+  assert.equal(summarizeSources(events[0]), '127.0.0.1:9（解析中…）');
+  assert.equal(summarizeSources(events[1]), '127.0.0.1:9 → 127.0.0.1');
+  const feed = createSourceCollector();
+  let merged;
+  for (const l of YT_MERGED) merged = feed(l);
+  assert.equal(summarizeSources({ streams: merged, proxy: null }), `${CDN}（解析中…）`, '视频、音频两路在同一个域名上，只列一次');
+  assert.equal(summarizeSources({ streams: [], proxy: { display: 'http://127.0.0.1:7890', ips: ['127.0.0.1'] } }), 'http://127.0.0.1:7890 → 127.0.0.1');
+});
+
+test('buildArgs: 下载前让 yt-dlp 把选中的格式（视频流地址）打印出来', () => {
+  const args = buildArgs('https://youtu.be/x', {});
+  for (let i = 0; i < SOURCE_PRINT_ARGS.length; i += 2) {
+    const at = args.indexOf(SOURCE_PRINT_ARGS[i + 1]);
+    assert.ok(at > 0, SOURCE_PRINT_ARGS[i + 1]);
+    assert.equal(args[at - 1], '--print');
+  }
 });
 
 // ---------- 代理地址校验 ----------

@@ -51,6 +51,14 @@ const PACKS = {
     // drawer
     originalUrl: '原始链接', fileLocation: '文件位置', timestamp: '时间', errorLabel: '错误',
     log: '日志',
+    // 详情：视频流来源
+    streamSource: '视频流来源（真正在下的是哪个地址）',
+    streamVideo: '视频', streamAudio: '音频', streamBoth: '视频+音频',
+    streamKindUrl: '地址', streamKindManifest: '播放列表', streamKindSegment: '分段', streamKindAlternate: '备用地址',
+    streamResolving: '解析中…', streamNoIp: '未解析到 IP', streamMore: '等 {n} 个',
+    streamViaProxy: '经由代理',
+    streamProxyNote: '连的是代理；视频流的域名由代理那一侧解析，这里只列出域名。',
+    streamIpNote: 'IP 是本机此刻的解析结果。CDN 会轮换地址，实际连接的可能不同。',
     // toasts
     taskAdded: '已添加 {n} 个下载任务',
     taskAddedItems: '已添加 {n} 个下载任务（选中 {m} 集）',
@@ -134,6 +142,14 @@ const PACKS = {
     downloadSelected: 'Download selected ({n})',
     originalUrl: 'Source URL', fileLocation: 'File location', timestamp: 'Time', errorLabel: 'Error',
     log: 'Log',
+    // Details: where the video stream actually comes from
+    streamSource: 'Stream source (where the video is actually downloaded from)',
+    streamVideo: 'video', streamAudio: 'audio', streamBoth: 'video + audio',
+    streamKindUrl: 'address', streamKindManifest: 'playlist', streamKindSegment: 'segment', streamKindAlternate: 'alternate',
+    streamResolving: 'resolving…', streamNoIp: 'no IP resolved', streamMore: '{n} in total',
+    streamViaProxy: 'via proxy',
+    streamProxyNote: 'The connection goes to the proxy; the stream hosts are resolved on the proxy side, so only their names are listed.',
+    streamIpNote: 'IPs are what this computer resolves right now. CDNs rotate addresses, so the one actually connected to may differ.',
     taskAdded: '{n} task(s) added',
     taskAddedItems: '{n} task(s) added ({m} selected)',
     proxySaved: 'Proxy saved: {v}', proxyCleared: 'Proxy cleared',

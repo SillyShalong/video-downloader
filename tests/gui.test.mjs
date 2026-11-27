@@ -169,6 +169,27 @@ test('GUI: 端到端下载任务 → 任务卡完成', { skip: !browser, timeout
   assert.ok((await page.locator('.trow.done').count()) >= 1, '应有「打开文件」按钮');
 });
 
+test('GUI: 详情里显示视频流来源（真正下载的域名 + IP），排在日志上方', { skip: !browser, timeout: 30000 }, async () => {
+  await page.click('.trow.done .t-title');
+  // 关掉的抽屉 DOM 还留在页面里（隐藏），所以要等「打开着的抽屉」里的那一块
+  await page.waitForSelector('.ant-drawer-open #stream-source', { timeout: 8000 });
+  const text = await page.textContent('.ant-drawer-open #stream-source');
+  const stubHost = `127.0.0.1:${stub.address().port}`;
+  assert.ok(text.includes('视频流来源'), '有标题: ' + text);
+  assert.ok(text.includes(stubHost), '显示域名（这里是本机桩的地址和端口）: ' + text);
+  assert.ok(/→\s*127\.0\.0\.1/.test(text), '显示解析出的 IP: ' + text);
+  assert.ok(text.includes(STUB_URL), '完整地址显示出来（可复制）: ' + text);
+  // 位置：紧挨着日志的上面
+  const aboveLog = await page.evaluate(() => {
+    const src = document.querySelector('.ant-drawer-open #stream-source');
+    const log = document.querySelector('.ant-drawer-open .log-pre');
+    return !!src && !!log && !!(src.compareDocumentPosition(log) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  assert.ok(aboveLog, '视频流来源应排在日志上方');
+  await page.click('.ant-drawer-open .ant-drawer-close');
+  await page.waitForFunction(() => !document.querySelector('.ant-drawer-open') || getComputedStyle(document.querySelector('.ant-drawer-open')).display === 'none');
+});
+
 test('GUI: 失败任务重试按钮 → 点按后成功', { skip: !browser, timeout: 120000 }, async () => {
   flakyFail = true;
   await page.fill('#input', FLAKY_URL);

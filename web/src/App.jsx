@@ -128,6 +128,64 @@ const TaskRow = memo(
   },
 );
 
+/* ---- 视频流来源：真正在下的是哪个地址（域名 + 本机解析出的 IP） ---- */
+const STREAM_ROLE = { video: 'streamVideo', audio: 'streamAudio', both: 'streamBoth' };
+const STREAM_KIND = { url: 'streamKindUrl', manifest: 'streamKindManifest', segment: 'streamKindSegment', alternate: 'streamKindAlternate' };
+
+function IpList({ ips }) {
+  // ips：null = 还在解析；[] = 解析不出来
+  if (ips == null) return <span className="src-note">{t('streamResolving')}</span>;
+  if (ips.length === 0) return <span className="src-note">{t('streamNoIp')}</span>;
+  return (
+    <span className="src-ips">
+      → {ips.slice(0, 3).join(', ')}
+      {ips.length > 3 && <span className="src-note"> {t('streamMore', { n: ips.length })}</span>}
+    </span>
+  );
+}
+
+function StreamSources({ sources, proxy }) {
+  return (
+    <div id="stream-source">
+      <Text type="secondary" className="tag-label">{t('streamSource')}</Text>
+      <div className="src-list">
+        {proxy && (
+          <div className="src-stream">
+            <div className="src-host">
+              <span className="src-kind">{t('streamViaProxy')}</span>
+              <Text code>{proxy.display}</Text>
+              <IpList ips={proxy.ips} />
+            </div>
+            <div className="src-note">{t('streamProxyNote')}</div>
+          </div>
+        )}
+        {sources.map((s, i) => (
+          <div className="src-stream" key={i}>
+            <div className="src-head">
+              <Tag bordered>{t(STREAM_ROLE[s.role] ?? 'streamBoth')}</Tag>
+              {s.label && <Text strong>{s.label}</Text>}
+              {s.protocol && <Text type="secondary">{s.protocol}</Text>}
+            </div>
+            {s.links.map((l, j) => (
+              <div key={j}>
+                <div className="src-host">
+                  <span className="src-kind">{t(STREAM_KIND[l.kind] ?? 'streamKindUrl')}</span>
+                  <Text code>{l.host || '—'}</Text>
+                  {!proxy && <IpList ips={l.ips} />}
+                </div>
+                <Typography.Paragraph className="src-url" copyable={{ text: l.url }} ellipsis={{ rows: 1 }} style={{ margin: 0 }}>
+                  {l.url}
+                </Typography.Paragraph>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      {!proxy && <div className="src-note">{t('streamIpNote')}</div>}
+    </div>
+  );
+}
+
 /* ---- 详情抽屉 ---- */
 function DetailDrawer({ task, onClose, onRetry, onOpen, onReveal, onDelete }) {
   if (!task) return null;
@@ -179,6 +237,8 @@ function DetailDrawer({ task, onClose, onRetry, onOpen, onReveal, onDelete }) {
             <div className="err">{task.error}</div>
           </div>
         )}
+
+        {task.sources?.length > 0 && <StreamSources sources={task.sources} proxy={task.sourceProxy} />}
 
         {task.log?.length > 0 && (
           <div>

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { withPage, evalInPage } from './headless-edge.mjs';
 import { downloadFile } from './download-file.mjs';
+import { emitSource, streamsFromUrls } from './stream-source.mjs';
 
 /** v.douyin.com 短链 302 到 www.douyin.com/video/<id>，取最终地址里的作品 ID */
 async function resolveItem(url) {
@@ -96,6 +97,7 @@ export async function downloadDouyin(url, opts = {}) {
 
   const urls = pickUrls(detail.video, quality);
   onEvent?.({ type: 'info', raw: `[douyin] @${detail.author?.nickname || '未知'} 《${title}》 开始下载` });
+  emitSource(onEvent, streamsFromUrls(urls)); // 视频流直链的域名 / IP，详情里显示
   await downloadFile(urls, dest, {
     onProgress: (p) =>
       onEvent?.({ type: 'progress', percent: p.percent, speed: p.speed, eta: p.eta, total: p.total, downloaded: p.done }),

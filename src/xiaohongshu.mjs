@@ -7,6 +7,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { withPage, evalInPage } from './headless-edge.mjs';
 import { downloadFile } from './download-file.mjs';
+import { emitSource, streamsFromUrls } from './stream-source.mjs';
 
 /** xhslink.com 短链 302 到带 xsec_token 的笔记页；保留完整 URL（token 必须带上） */
 async function resolveNote(url) {
@@ -100,6 +101,7 @@ export async function downloadXiaohongshu(url, opts = {}) {
   }
 
   onEvent?.({ type: 'info', raw: `[xhs] @${info.nickname || '未知'} 《${title}》 开始下载（${info.codec}）` });
+  emitSource(onEvent, streamsFromUrls(info.urls)); // 视频流直链的域名 / IP，详情里显示
   await downloadFile(info.urls, dest, {
     onProgress: (p) =>
       onEvent?.({ type: 'progress', percent: p.percent, speed: p.speed, eta: p.eta, total: p.total, downloaded: p.done }),

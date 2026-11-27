@@ -15,6 +15,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { download, inspectUrl, DEFAULT_OUT_DIR } from './downloader.mjs';
+import { summarizeSources } from './stream-source.mjs';
 import { matchSite, extractUrls } from './sites.mjs';
 import { loadConfig, saveConfig, isValidProxy, normalizeHlsSites } from './config.mjs';
 import { loadHistory, appendHistory, removeHistory } from './history.mjs';
@@ -146,6 +147,9 @@ export function createApp(opts = {}) {
       totalBytes: t.totalBytes ?? null,
       sizeBytes: t.sizeBytes ?? null,
       log: t.log,
+      // 真正的视频流地址（域名 + 解析出的 IP）；没取到时为 null
+      sources: t.sources ?? null,
+      sourceProxy: t.sourceProxy ?? null,
       quality: t.quality,
       audio: t.audio,
       playlistItems: t.playlistItems ?? null,
@@ -211,6 +215,18 @@ export function createApp(opts = {}) {
               emitTask(t);
             } else if (ev.type === 'log' && ev.raw.startsWith('ERROR')) {
               t.log.push(ev.raw);
+              emitTask(t);
+            } else if (ev.type === 'source') {
+              // 真正的视频流地址（域名 + 解析出的 IP）：详情里单独一块显示，日志里也留一行。
+              // 同一组来源会来两次（先带域名、IP 解析完再来一次）：第二次原地更新那一行，不追加
+              t.sources = ev.streams;
+              t.sourceProxy = ev.proxy;
+              const line = `[source] ${summarizeSources(ev)}`;
+              if (t._sourceId === ev.sourceId) t.log[t._sourceLine] = line;
+              else {
+                t._sourceId = ev.sourceId;
+                t._sourceLine = t.log.push(line) - 1;
+              }
               emitTask(t);
             }
           },

@@ -278,6 +278,17 @@ test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', 
   assert.ok(task.file?.endsWith('.mp4'));
   assert.ok(task.percent === 100);
   assert.ok(seen.has('done'), 'SSE 应推送 done 状态');
+
+  // 真正下载的是哪个地址：yt-dlp 在下载前把它打出来 → 任务上带一份（详情里显示在日志上方）
+  // 桩是 127.0.0.1 上的一个文件，所以是单一格式、IP 字面量（不需要解析）
+  const stubHost = `127.0.0.1:${stub.address().port}`;
+  assert.equal(task.sources?.length, 1, '应记录视频流来源: ' + JSON.stringify(task.sources));
+  const [stream] = task.sources;
+  assert.equal(stream.role, 'both');
+  assert.deepEqual(stream.links.map((l) => [l.kind, l.url, l.host, l.ips]), [['url', STUB_URL, stubHost, ['127.0.0.1']]]);
+  assert.equal(task.sourceProxy, null);
+  const sourceLines = task.log.filter((l) => l.startsWith('[source] '));
+  assert.deepEqual(sourceLines, [`[source] ${stubHost} → 127.0.0.1`], '日志里留一行（IP 解析完原地更新，不重复记）');
   // 文件确实存在且内容一致
   const { readFile } = await import('node:fs/promises');
   const content = await readFile(task.file);
@@ -289,6 +300,8 @@ test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', 
   assert.ok(rec, '历史应包含该任务');
   assert.equal(rec.url, STUB_URL, '历史保留原始链接');
   assert.equal(rec.file, task.file, '历史保留下载目的地');
+  // 详情里显示的「视频流来源」也一起保留（重启后还能看当时是从哪个域名下的）
+  assert.deepEqual(rec.sources?.[0]?.links?.map((l) => [l.url, l.ips]), [[STUB_URL, ['127.0.0.1']]], '历史保留视频流来源');
 
   // 重启回填：新建一个 app 实例，任务列表应含历史记录
   const server2 = createApp();
@@ -300,6 +313,7 @@ test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', 
     assert.equal(st?.status, 'done', '重启后历史任务可见');
     assert.equal(st?.file, task.file);
     assert.equal(st?.url, STUB_URL);
+    assert.deepEqual(st?.sources?.[0]?.links?.map((l) => l.host), [`127.0.0.1:${stub.address().port}`], '重启后视频流来源可见');
   } finally {
     server2.close();
     server2.closeAllConnections?.();

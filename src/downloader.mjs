@@ -8,6 +8,7 @@ import { downloadDouyin } from './douyin.mjs';
 import { downloadXiaohongshu } from './xiaohongshu.mjs';
 import { downloadMissav } from './missav.mjs';
 import { loadConfig } from './config.mjs';
+import { SOURCE_PRINT_ARGS, createSourceCollector, emitSource } from './stream-source.mjs';
 import { ytDlpName, ffmpegName, killTree } from './platform.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -92,6 +93,7 @@ export function buildArgs(url, opts = {}) {
     '--progress',
     '--print', 'before_dl:__TITLE__%(title)s', // 下载前输出标题（带标记前缀）
     '--print', 'after_move:%(filepath)s', // 下载完成后输出最终文件路径
+    ...SOURCE_PRINT_ARGS, // 下载前输出选中的格式：视频流真正的地址（域名 / IP），详情里显示
     '--no-simulate',
     '--encoding', 'utf-8', // 输出用 UTF-8，避免中文/emoji 路径被 GBK 破坏
     '-o', path.join(outDir, OUTPUT_TEMPLATE),
@@ -221,7 +223,7 @@ async function downloadViaYtDlp(url, opts = {}) {
 
   for (let attempt = 1; ; attempt++) {
     if (signal?.aborted) throw abortError();
-    const { code, tail, files } = await runYtDlpOnce(url, args, onEvent, signal);
+    const { code, tail, files } = await runYtDlpOnce(url, args, onEvent, signal, { proxy: opts.proxy });
     if (signal?.aborted) throw abortError();
     if (code === 0) {
       await ensurePlayableFiles(files, (ev) => onEvent?.(ev));
@@ -246,7 +248,7 @@ function abortError() {
 }
 
 /** 跑一次 yt-dlp 进程，收集结果（不抛业务异常）；signal 触发时击杀进程树 */
-function runYtDlpOnce(url, args, onEvent, signal) {
+function runYtDlpOnce(url, args, onEvent, signal, { proxy } = {}) {
   return new Promise((resolve, reject) => {
     // bin/ 放进 PATH 让 yt-dlp 自动发现 deno(JS runtime，解 YouTube 签名挑战)；
     // 同时强制 Python 侧输出编码，双保险避免中文/emoji 被 GBK 破坏
@@ -267,12 +269,19 @@ function runYtDlpOnce(url, args, onEvent, signal) {
     const files = [];
     const tail = []; // 保留末尾若干行，出错时报告
     let stdoutBuf = '';
+    // 视频流地址：yt-dlp 在下载前打印，一组收齐就发给界面（不等它，下载照常进行）
+    const feedSource = createSourceCollector();
 
     const emit = (ev) => onEvent?.(ev);
 
     const handleLine = (line) => {
       const text = line.trim();
       if (!text) return;
+      const streams = feedSource(text);
+      if (streams !== undefined) {
+        if (streams) emitSource(onEvent, streams, { proxy });
+        return;
+      }
       tail.push(text);
       if (tail.length > 15) tail.shift();
 
