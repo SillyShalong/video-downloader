@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { download, inspectUrl, DEFAULT_OUT_DIR } from './downloader.mjs';
+import { download, downloadRoute, inspectUrl, DEFAULT_OUT_DIR } from './downloader.mjs';
 import { summarizeSources } from './stream-source.mjs';
 import { matchSite, extractUrls } from './sites.mjs';
 import { loadConfig, saveConfig, isValidProxy, normalizeHlsSites } from './config.mjs';
@@ -150,6 +150,8 @@ export function createApp(opts = {}) {
       // 真正的视频流地址（域名 + 解析出的 IP）；没取到时为 null
       sources: t.sources ?? null,
       sourceProxy: t.sourceProxy ?? null,
+      // 数据走的是设置里的代理还是直连（任务开始运行时定下来）；老记录没有这个字段
+      route: t.route ?? null,
       quality: t.quality,
       audio: t.audio,
       playlistItems: t.playlistItems ?? null,
@@ -168,6 +170,7 @@ export function createApp(opts = {}) {
       t.status = 'running';
       t.stage = '解析中';
       t.error = null;
+      t.route = downloadRoute(t.url); // 走代理还是直连：一开始就定下来，界面据此标「走代理 / 直连」
       emitTask(t);
 
       const abort = new AbortController();

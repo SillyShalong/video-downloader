@@ -59,6 +59,13 @@ const PACKS = {
     streamViaProxy: '经由代理',
     streamProxyNote: '连的是代理；视频流的域名由代理那一侧解析，这里只列出域名。',
     streamIpNote: 'IP 是本机此刻的解析结果。CDN 会轮换地址，实际连接的可能不同。',
+    streamPending: '还没取到视频流地址。',
+    // 线路：这次下载走的是设置里的代理，还是直连
+    routeProxy: '走代理', routeDirect: '直连',
+    routeProxyLine: '数据经设置里的代理 {v} 转发；视频流的域名由代理那一侧解析，下面只列域名。',
+    routeDirectDomestic: '直连，没有走设置里的代理：国内站点固定直连。',
+    routeDirectBrowser: '直连，没有走设置里的代理：这类站点固定直连 —— 网页由内置浏览器打开，分段用同一个出口下载。',
+    routeDirectNone: '直连：设置里没有配置代理。',
     // toasts
     taskAdded: '已添加 {n} 个下载任务',
     taskAddedItems: '已添加 {n} 个下载任务（选中 {m} 集）',
@@ -150,6 +157,13 @@ const PACKS = {
     streamViaProxy: 'via proxy',
     streamProxyNote: 'The connection goes to the proxy; the stream hosts are resolved on the proxy side, so only their names are listed.',
     streamIpNote: 'IPs are what this computer resolves right now. CDNs rotate addresses, so the one actually connected to may differ.',
+    streamPending: 'Stream address not available yet.',
+    // Route: through the configured proxy, or direct
+    routeProxy: 'via proxy', routeDirect: 'direct',
+    routeProxyLine: 'Data is forwarded through the configured proxy {v}; the stream hosts are resolved on the proxy side, so only their names are listed.',
+    routeDirectDomestic: 'Direct, not through the configured proxy: domestic sites always connect directly.',
+    routeDirectBrowser: 'Direct, not through the configured proxy: these sites always connect directly — the page is opened in the built-in browser and the segments are fetched from the same network path.',
+    routeDirectNone: 'Direct: no proxy is configured.',
     taskAdded: '{n} task(s) added',
     taskAddedItems: '{n} task(s) added ({m} selected)',
     proxySaved: 'Proxy saved: {v}', proxyCleared: 'Proxy cleared',

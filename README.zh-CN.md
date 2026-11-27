@@ -11,7 +11,7 @@
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)](https://react.dev/)
 [![Ant Design](https://img.shields.io/badge/Ant_Design-6-1677ff?logo=antdesign&logoColor=white)](https://ant.design/)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-72%20桌面%20·%2039%20安卓-brightgreen)](#-自动化测试)
+[![Tests](https://img.shields.io/badge/tests-76%20桌面%20·%2039%20安卓-brightgreen)](#-自动化测试)
 
 **桌面应用 + CLI + 安卓应用** · 清晰度自选 · 实时速度 · 暂停/终止 · 下载历史 · H.264 兼容 · 中英双语
 
@@ -32,6 +32,7 @@
 | 📋 **多视频源选择** | 播放列表/合集/频道自动检测 | 勾选想下的视频，只下载选中的 |
 | 🗂 **下载历史** | 元数据持久化（原始链接/目标路径/大小） | 紧凑列表 + 详情抽屉，可删除单条记录 |
 | 🔎 **视频流来源** | 详情里显示真正在下的地址：视频 / 音频各自的域名 + 本机解析出的 IP | 排查 403、卡顿时知道连的是哪台服务器（桌面版） |
+| 🧭 **走代理还是直连** | 每个下载一开始就标明数据是走设置里的代理，还是直连；HLS、国内站点绕过代理时用醒目颜色提示 | 任务行（设了代理时）和详情里都显示（桌面版） |
 | 🛡 **兼容性优先** | 全站锁定 H.264 + AAC | Windows 自带播放器直接可放，不黑屏 |
 | 🌐 **代理支持** | HTTP / SOCKS5，一键测试连通 | 抖音/小红书智能直连不走代理 |
 | 🔁 **稳定下载** | 瞬时错误（403/超时）自动重试 | 手动暂停 / 终止 / 恢复 |
@@ -118,7 +119,7 @@ npm run android:apk     # 产物：android/app/build/outputs/apk/debug/app-debug
 ## 🧪 自动化测试
 
 ```bash
-npm test                    # 桌面版：构建前端 + 全量测试（72）
+npm test                    # 桌面版：构建前端 + 全量测试（76）
 npm run test:gui            # 桌面版 GUI 回归（无头 Edge 驱动真实页面）
 npm run test:network        # 桌面版：开启外网测试
 
@@ -127,7 +128,7 @@ npm run test:android:media  # 安卓：封装器 vs ffmpeg 逐帧比对（在电
 npm run test:android:e2e    # 安卓：模拟器真实界面端到端测试（adb 真点击/真输入，ffmpeg 校验产物）；需要 ANDROID_HOME 或 PATH 里有 adb
 ```
 
-- **桌面版（72）**：站点识别、分享口令解析、下载参数（H.264 锁定回归）、视频流来源（yt-dlp 输出解析、域名 → IP、走代理时的显示）、代理校验、资源管理器命令行、下载任务全流程（SSE → 落盘）、重试/暂停/终止、历史持久化、多视频源选择、防闪烁、弹窗关闭、远程模式连接错误。
+- **桌面版（76）**：站点识别、分享口令解析、下载参数（H.264 锁定回归）、视频流来源（yt-dlp 输出解析、域名 → IP、走代理时的显示）、走代理 / 直连的线路标记（设了代理也固定直连的站点会被标出来）、代理校验、资源管理器命令行、下载任务全流程（SSE → 落盘）、重试/暂停/终止、历史持久化、多视频源选择、防闪烁、弹窗关闭、远程模式连接错误。
 - **安卓 JVM 单测（39）**：MP4 写入/读回（时间戳、关键帧、编辑列表、B 帧）、m3u8 解析、MPEG-TS/PES 构造、ADTS 拆帧、AES-128 解密、链接/站点识别、文件名清理。
 - **安卓媒体校验**：自研封装器的产物必须与 `ffmpeg -c copy` **逐帧一致**（画面哈希 + 显示时刻 + 关键帧表）、音频逐采样一致、音画起点一致、整段解码零错误 —— 覆盖带 B 帧的合成媒体、分片 MP4（含 sample 表与分片混排的）、HLS 的 fMP4，加 `--yt` 还会跑真实的 YouTube 流。
 - **安卓端到端（19 个场景）**：在真实模拟器界面上操作 —— 启动、B站/YouTube/HLS 下载（产物拉回电脑用 ffmpeg 校验）、系统文件夹选择器（停在当前目录、选目录、取消、目录失效）、多 P 选集、暂停/恢复、应用被杀后续传、终止、详情抽屉、设置、删除历史。

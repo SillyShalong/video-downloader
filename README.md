@@ -11,7 +11,7 @@
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)](https://react.dev/)
 [![Ant Design](https://img.shields.io/badge/Ant_Design-6-1677ff?logo=antdesign&logoColor=white)](https://ant.design/)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-72%20desktop%20·%2039%20Android-brightgreen)](#-automated-tests)
+[![Tests](https://img.shields.io/badge/tests-76%20desktop%20·%2039%20Android-brightgreen)](#-automated-tests)
 
 **Desktop app + CLI + Android app** · Quality selection · Real-time speed · Pause/Cancel · Download history · H.264 output · Bilingual UI
 
@@ -32,6 +32,7 @@
 | 📋 **Multi-source picker** | Playlists/channels auto-detected | Check the videos you want, download only those |
 | 🗂 **Download history** | Full metadata persisted (URL, path, size) | Compact list + detail drawer, delete individual records |
 | 🔎 **Stream source** | The address the video actually comes from: host of each video/audio stream + the IPs this machine resolves it to | Shown above the log in the details, to tell which server a 403 or a stall is coming from (desktop) |
+| 🧭 **Proxy or direct?** | Every download is marked "via proxy" or "direct" as soon as it starts; HLS and domestic sites that bypass the configured proxy are flagged in a warning colour | Task row (when a proxy is configured) and the details (desktop) |
 | 🛡 **H.264 guaranteed** | All sites lock H.264+AAC | Windows default player works, no black screen |
 | 🌐 **Proxy support** | HTTP/SOCKS5 with one-click test | Douyin/Xiaohongshu auto-bypass (domestic) |
 | 🔁 **Stable downloads** | Auto-retry transient errors (403/timeout) | Manual pause / cancel / resume |
@@ -118,7 +119,7 @@ npm run android:apk     # → android/app/build/outputs/apk/debug/app-debug.apk
 ## 🧪 Automated Tests
 
 ```bash
-npm test                    # Desktop: build frontend + all tests (72)
+npm test                    # Desktop: build frontend + all tests (76)
 npm run test:gui            # Desktop GUI regression (headless Edge drives the real page)
 npm run test:network        # Desktop: enable external-network tests
 
@@ -127,7 +128,7 @@ npm run test:android:media  # Android: muxer vs ffmpeg, frame by frame (on the P
 npm run test:android:e2e    # Android: real-GUI E2E on an emulator (adb taps/typing, ffmpeg verifies files); needs ANDROID_HOME or adb on PATH
 ```
 
-- **Desktop (72)**: site detection, share-text parsing, download args (H.264 lock regression), stream source (yt-dlp output parsing, host → IP, proxy case), proxy validation, explorer command line, download task pipeline (SSE → disk), retry/pause/cancel, history persistence, multi-source selection, anti-flicker, modal close, remote-mode errors.
+- **Desktop (76)**: site detection, share-text parsing, download args (H.264 lock regression), stream source (yt-dlp output parsing, host → IP, proxy case), proxy-or-direct marker (fixed-direct sites stay direct with a proxy configured), proxy validation, explorer command line, download task pipeline (SSE → disk), retry/pause/cancel, history persistence, multi-source selection, anti-flicker, modal close, remote-mode errors.
 - **Android JVM (39)**: MP4 writer/reader round-trips (timestamps, keyframes, edit lists, B-frames, fragmented files whose sample table is not empty), m3u8 parsing, MPEG-TS/PES construction, ADTS splitting, AES-128 decryption, URL/site detection, filename sanitizing.
 - **Android media check**: our muxer's output must match `ffmpeg -c copy` *frame by frame* (picture hash + presentation time + keyframe table), audio sample-exact, A/V start alignment, zero decode errors — on synthetic media (with B-frames), fragmented MP4, HLS fMP4, and with `--yt` real YouTube streams.
 - **Android E2E (19 scenarios)**: on a real emulator UI — launch, Bilibili/YouTube/HLS downloads (files pulled and verified with ffmpeg), system folder picker (starts in the current folder, picking a folder, cancelling, invalid folder), multi-part selection, pause/resume, resume after the app is killed, cancel, detail drawer, settings, delete history.

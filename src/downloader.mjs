@@ -8,7 +8,7 @@ import { downloadDouyin } from './douyin.mjs';
 import { downloadXiaohongshu } from './xiaohongshu.mjs';
 import { downloadMissav } from './missav.mjs';
 import { loadConfig } from './config.mjs';
-import { SOURCE_PRINT_ARGS, createSourceCollector, emitSource } from './stream-source.mjs';
+import { SOURCE_PRINT_ARGS, createSourceCollector, emitSource, proxyDisplay } from './stream-source.mjs';
 import { ytDlpName, ffmpegName, killTree } from './platform.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -185,6 +185,26 @@ export async function inspectUrl(url, { proxy } = {}) {
       }
     });
   });
+}
+
+/**
+ * 这次下载的数据走哪条线路：设置里的代理，还是直连。任务一开始运行就定下来，
+ * 界面上的「走代理 / 直连」标记、详情里的说明都看它。
+ *
+ * 规则和下面 download() 的分发一一对应，改一处要同时改另一处：
+ *  - 抖音 / 小红书：国内站，固定直连（海外出口反而触发风控）
+ *  - HLS 站点：网页由内置浏览器打开，分段跟着直连（两步用同一个出口）
+ *  - 其它站点（yt-dlp）：配置了代理就走代理，没配置就直连
+ *
+ * @returns {{via: 'proxy'|'direct', reason?: 'domestic'|'browser'|'none', proxy?: string}}
+ *   reason 只在直连时有：为什么直连；proxy 只在走代理时有，是给用户看的地址（不含账号密码）
+ */
+export function downloadRoute(url, { proxy } = {}) {
+  const engine = matchSite(url)?.engine;
+  if (engine === 'douyin' || engine === 'xiaohongshu') return { via: 'direct', reason: 'domestic' };
+  if (engine === 'missav') return { via: 'direct', reason: 'browser' };
+  const px = proxy !== undefined ? proxy : loadConfig().proxy;
+  return px ? { via: 'proxy', proxy: proxyDisplay(px) } : { via: 'direct', reason: 'none' };
 }
 
 /**
