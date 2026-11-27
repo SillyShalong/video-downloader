@@ -133,6 +133,16 @@ test('buildArgs: 清晰度限制映射为 height<=N 且保持 avc1 优先', () =
   const fmt = args[args.indexOf('-f') + 1];
   assert.ok(fmt.includes('height<=720'));
   assert.ok(fmt.includes('vcodec^=avc1'));
+  // 只有「音视频合一」格式的站点（不少视频站是这样）：也要挑不超过所选清晰度的那一档。
+  // 以前直接退到不带限制的 b —— 选了 360p 照样下最高清晰度
+  assert.ok(fmt.includes('/b[height<=720]/b'), `合一格式也要限制清晰度: ${fmt}`);
+  assert.ok(fmt.indexOf('b[height<=720]') > fmt.indexOf('bv*[height<=720]+ba'), '仍然优先「纯视频 + 纯音频」两路');
+  assert.ok(fmt.endsWith('/b'), '站点没有这么低的清晰度时，才退到最佳');
+});
+
+test('buildArgs: 分段流拿不到分段时停下来（不跳过），留给下载器换地址重跑', () => {
+  const args = buildArgs('https://youtu.be/x', {});
+  assert.ok(args.includes('--abort-on-unavailable-fragments'));
 });
 
 test('buildArgs: 仅音频走 -x mp3', () => {
@@ -331,8 +341,8 @@ const { normalizeHlsSites } = await import('../src/config.mjs');
 
 test('normalizeHlsSites: 去 scheme/www/路径、小写、去重、过滤非法', () => {
   assert.deepEqual(
-    normalizeHlsSites(['https://www.Example.com/watch/1', 'MISSAV.ws', 'https://missav.ws', 'not a domain', '', 'missav.ws']),
-    ['example.com', 'missav.ws'],
+    normalizeHlsSites(['https://www.Example.com/watch/1', 'Stream.Example.NET', 'https://stream.example.net', 'not a domain', '', 'stream.example.net']),
+    ['example.com', 'stream.example.net'],
   );
   assert.deepEqual(
     normalizeHlsSites('a.org,,b.org;\nhttps://c.org/path?q=1'),

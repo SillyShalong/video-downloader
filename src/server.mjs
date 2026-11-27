@@ -7,7 +7,7 @@
 //   POST /api/open    用系统默认程序打开文件
 //   POST /api/reveal  在资源管理器中定位文件
 import http from 'node:http';
-import { existsSync, statSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -78,10 +78,11 @@ function readJson(req, limit = 2 * 1024 * 1024) {
 export function createApp(opts = {}) {
   const { pickDirectory } = opts;
   const tasks = new Map(); // id -> task
-  const queue = []; // 待执行的任务 id（顺序执行）
+  const queue = []; // 待执行的任务 id（按先后顺序领，同时最多跑 maxParallel 个）
   const clients = new Set(); // 已连接的 SSE 响应对象
   let pumping = false;
-  let currentRun = null;
+  /** 正在下载的任务 → { abort, done }（done 在任务结束时兑现） */
+  const running = new Map();
 
   const ACTIVE_FILE = path.join(path.dirname(process.env.VD_HISTORY_PATH || path.join(__dirname, '..', 'history.json')), 'active-tasks.json');
 
@@ -110,6 +111,13 @@ export function createApp(opts = {}) {
       writeFileSync(ACTIVE_FILE, JSON.stringify(active, null, 2), 'utf8');
     } catch {}
   }
+
+  /** 任务在目标目录里的临时下载目录：没下完的 .part 放在这里（按任务 id 命名，恢复时能接着用） */
+  const removeWorkDir = (t) => {
+    try {
+      rmSync(path.join(t.outDir, `.vd-tmp-${t.id}`), { recursive: true, force: true });
+    } catch {}
+  };
 
   // 启动时回填历史（已完成任务的元数据）
   for (const r of loadHistory()) {
@@ -158,23 +166,53 @@ export function createApp(opts = {}) {
   }
 
 
+  /** 同时下载的任务数（config.json 的 maxParallel，默认 3 个） */
+  function maxParallel() {
+    const n = Number(loadConfig().maxParallel);
+    return Number.isInteger(n) && n >= 1 && n <= 8 ? n : 3;
+  }
+
+  /**
+   * 从队列里领任务：直到队列空了，或者同时在跑的任务数到了上限。
+   * 领任务只会有一个循环在做（pumping），所以不会有两个循环领到同一个任务。
+   */
   async function pump() {
     if (pumping) return;
     pumping = true;
-    while (queue.length > 0) {
-      const id = queue.shift();
-      const t = tasks.get(id);
-      if (!t || t.status === 'paused' || t.status === 'cancelled') continue;
+    try {
+      while (queue.length > 0) {
+        if (running.size >= maxParallel()) {
+          // 到上限了：等任何一个在跑的任务结束再接着领
+          await Promise.race([...running.values()].map((r) => r.done));
+          continue;
+        }
+        const id = queue.shift();
+        const t = tasks.get(id);
+        if (!t || t.status === 'paused' || t.status === 'cancelled') continue;
+        runTask(t); // 不等它跑完，接着看还能不能再领一个
+      }
+    } finally {
+      pumping = false;
+    }
+  }
+
+  /** 跑一个任务。同一时刻可能有多个任务在跑，各自的状态只在自己的闭包里改 */
+  async function runTask(t) {
+    const id = t.id;
+    const abort = new AbortController();
+    let finish = () => {};
+    const done = new Promise((resolve) => (finish = resolve));
+    running.set(id, { abort, done });
+    try {
       t.status = 'running';
       t.stage = '解析中';
       t.error = null;
       emitTask(t);
 
-      const abort = new AbortController();
-      currentRun = { id, abort };
       try {
         const { files } = await download(t.url, {
           outDir: t.outDir,
+          taskId: id, // 下载器用它给这个任务单独建一个临时目录
           quality: t.quality,
           audioOnly: t.audio,
           playlistItems: t.playlistItems,
@@ -253,19 +291,21 @@ export function createApp(opts = {}) {
           t.stage = t.status === 'paused' ? '已暂停' : '已终止';
           t.speed = t.eta = null;
           t.log.push(t.status === 'paused' ? '⏸ 已暂停（恢复时断点续传）' : '⏹ 已终止');
+          // 终止：连没下完的临时文件一起删掉；暂停：留着供续传
+          if (t.status !== 'paused') removeWorkDir(t);
         } else {
           t.status = 'error';
           t.error = err.message.split('\n').slice(-6).join('\n');
           t.log.push(`✖ ${err.message}`);
         }
         emitTask(t);
-      } finally {
-        currentRun = null;
       }
+    } finally {
+      running.delete(id);
+      finish();
+      pump(); // 腾出了名额：队列里还有任务的话接着领
     }
-    pumping = false;
   }
-
   function createTasks(input, { quality, audio, outDir, playlistItems }) {
     const text = String(input || '').trim();
     let urls = extractUrls(text);
@@ -428,7 +468,17 @@ export function createApp(opts = {}) {
         if (body.hlsSites !== undefined) {
           patch.hlsSites = normalizeHlsSites(body.hlsSites);
         }
+        if (body.maxParallel !== undefined) {
+          const n = Number(body.maxParallel);
+          if (!Number.isInteger(n) || n < 1 || n > 8) {
+            send(400, { error: '同时下载任务数应为 1 到 8 的整数' });
+            return;
+          }
+          patch.maxParallel = n;
+        }
         saveConfig(patch);
+        // 调大了名额：队列里等着的任务可以接着领
+        pump();
         send(200, { ok: true, ...patch });
         return;
       }
@@ -524,12 +574,12 @@ export function createApp(opts = {}) {
           send(200, { ok: true });
           return;
         }
-        if (t.status !== 'running' || currentRun?.id !== t.id) {
+        if (t.status !== 'running' || !running.has(t.id)) {
           send(400, { error: '任务不在下载中，无法暂停' });
           return;
         }
         t._intent = 'paused';
-        currentRun.abort.abort();
+        running.get(t.id).abort.abort();
         send(200, { ok: true });
         return;
       }
@@ -550,12 +600,12 @@ export function createApp(opts = {}) {
           send(200, { ok: true });
           return;
         }
-        if (t.status !== 'running' || currentRun?.id !== t.id) {
+        if (t.status !== 'running' || !running.has(t.id)) {
           send(400, { error: '任务不在下载中，无法终止' });
           return;
         }
         t._intent = 'cancelled';
-        currentRun.abort.abort();
+        running.get(t.id).abort.abort();
         send(200, { ok: true });
         return;
       }
@@ -580,6 +630,7 @@ export function createApp(opts = {}) {
           return;
         }
         tasks.delete(id);
+        removeWorkDir(t); // 可能还留着没下完的临时文件
         try { removeHistory(id); } catch {}
         // 广播删除事件（前端收到后从列表移除）
         const data = JSON.stringify({ type: 'delete', id });

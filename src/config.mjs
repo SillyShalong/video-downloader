@@ -7,7 +7,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // 测试/打包版可用 VD_CONFIG_PATH 指定（测试隔离临时配置、打包版指用户数据目录）
 const FILE = process.env.VD_CONFIG_PATH || path.join(ROOT, 'config.json');
 
-const DEFAULTS = { proxy: '', bilibiliSessdata: '', hlsSites: [] };
+// maxParallel：同时下载的任务数（默认 3 个，设置里可调）
+const DEFAULTS = { proxy: '', bilibiliSessdata: '', hlsSites: [], maxParallel: 3 };
 
 export function loadConfig() {
   try {

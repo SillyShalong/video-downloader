@@ -27,7 +27,7 @@ jobs:
         run: npm run build:web
 
       - name: Run tests
-        run: npm run test:unit && npm run test:server
+        run: npm run test:unit && npm run test:server && npm run test:hls
         env:
           CI: true
 

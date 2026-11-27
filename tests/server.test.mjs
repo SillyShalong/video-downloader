@@ -28,11 +28,15 @@ const BASE = `http://127.0.0.1:${server.address().port}`;
 const stubBody = Buffer.from('FAKEVIDEOCONTENT-NOT-A-REAL-MP4-BUT-FINE-FOR-DOWNLOAD-TEST');
 const slowBody = Buffer.alloc(4096);
 let flakyFail = true;
+// 正在下载 slow.mp4 的任务（按地址里的 ?n= 标签区分）：peakInflight 是同时下载的任务数的峰值
+const inflight = new Map();
+let peakInflight = 0;
 const stub = http.createServer((req, res) => {
-  if (req.url === '/fake.mp4') {
+  const pathname = new URL(req.url, 'http://x').pathname;
+  if (pathname === '/fake.mp4') {
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(stubBody.length) });
     res.end(stubBody);
-  } else if (req.url === '/flaky.mp4') {
+  } else if (pathname === '/flaky.mp4') {
     if (flakyFail) {
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('forbidden (simulated transient failure)');
@@ -40,7 +44,15 @@ const stub = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(stubBody.length) });
       res.end(stubBody);
     }
-  } else if (req.url === '/slow.mp4') {
+  } else if (pathname === '/slow.mp4') {
+    const tag = new URL(req.url, 'http://x').searchParams.get('n') ?? '';
+    inflight.set(tag, (inflight.get(tag) || 0) + 1);
+    peakInflight = Math.max(peakInflight, inflight.size);
+    res.on('close', () => {
+      const left = (inflight.get(tag) || 1) - 1;
+      if (left <= 0) inflight.delete(tag);
+      else inflight.set(tag, left);
+    });
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(slowBody.length) });
     let i = 0;
     const timer = setInterval(() => {
@@ -138,17 +150,29 @@ test('GET/POST /api/config: SESSDATA 校验与持久化', async () => {
 });
 
 test('GET/POST /api/config: hlsSites 归一化保存并读回', async () => {
-  const ok = await post('/api/config', { hlsSites: ['https://www.Example.com/x', 'MISSAV.ws', 'not a domain', 'missav.ws'] });
+  const ok = await post('/api/config', { hlsSites: ['https://www.Example.com/x', 'Stream.Example.NET', 'not a domain', 'stream.example.net'] });
   assert.equal(ok.status, 200);
   // 归一化：scheme/www 剥离、小写、去重、非法丢弃
   const got = (await j('/api/config')).body.hlsSites;
-  assert.deepEqual(got, ['example.com', 'missav.ws']);
+  assert.deepEqual(got, ['example.com', 'stream.example.net']);
   // 数组之外的输入形态（换行分隔文本）也支持
   await post('/api/config', { hlsSites: 'a.org\nb.org' });
   assert.deepEqual((await j('/api/config')).body.hlsSites, ['a.org', 'b.org']);
   // 清空
   await post('/api/config', { hlsSites: [] });
   assert.deepEqual((await j('/api/config')).body.hlsSites, []);
+});
+
+test('GET/POST /api/config: maxParallel（同时下载任务数）校验与持久化', async () => {
+  assert.equal((await j('/api/config')).body.maxParallel, 3, '默认同时下载 3 个');
+  for (const bad of [0, 9, 2.5, 'x']) {
+    assert.equal((await post('/api/config', { maxParallel: bad })).status, 400, `应拒绝 ${JSON.stringify(bad)}`);
+  }
+  const ok = await post('/api/config', { maxParallel: 2 });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.maxParallel, 2);
+  assert.equal((await j('/api/config')).body.maxParallel, 2, '应持久化');
+  await post('/api/config', { maxParallel: 3 }); // 复原
 });
 
 // ---------- 代理测试 ----------
@@ -444,4 +468,34 @@ test('POST /api/retry: 失败任务复位重跑直至成功', { timeout: 120000 
   const done = await waitTask(id);
   assert.equal(done?.status, 'done', '重试后应成功');
   assert.ok(done.file?.endsWith('.mp4'));
+});
+
+// ---------- 同时下载多个任务 ----------
+test('同时下载：默认 3 个一起跑（第 4 个排队），调成 1 之后一个下完再下一个', { timeout: 240000 }, async () => {
+  const outDir = path.join(tmpRoot, 'parallel');
+  const input = (tags) => tags.map((n) => `${SLOW_URL}?n=${n}`).join('\n');
+  const waitAll = async (tasks) => {
+    for (const t of tasks) {
+      const end = await waitTask(t.id, 120000);
+      assert.equal(end?.status, 'done', `任务 ${t.url} 应完成: ${end?.error}`);
+      assert.equal(readFileSync(end.file).length, slowBody.length, '文件内容应完整');
+    }
+  };
+
+  peakInflight = 0;
+  const a = await post('/api/download', { input: input([1, 2, 3, 4]), outDir });
+  assert.equal(a.body.tasks.length, 4);
+  await waitAll(a.body.tasks);
+  assert.equal(peakInflight, 3, `默认应同时下载 3 个，实际观察到 ${peakInflight}`);
+
+  await post('/api/config', { maxParallel: 1 });
+  try {
+    peakInflight = 0;
+    const b = await post('/api/download', { input: input(['a', 'b']), outDir });
+    assert.equal(b.body.tasks.length, 2);
+    await waitAll(b.body.tasks);
+    assert.equal(peakInflight, 1, `调成 1 之后不应同时下载两个，实际观察到 ${peakInflight}`);
+  } finally {
+    await post('/api/config', { maxParallel: 3 }); // 复原
+  }
 });
