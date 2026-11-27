@@ -392,6 +392,11 @@ class Mp4Reader(file: File) : Closeable {
                 t.u24()
                 if (version == 1) t.u64() else t.u32()
             }
+            // 这一小段（traf）的起点：没有 tfdt 就接着这一路上一个 sample 的结束时间
+            var trafDts = baseDts ?: if (b.dts.size > 0) b.dts[b.dts.size - 1] + b.lastDuration else 0L
+            // 一个 traf 里可以有多个 trun（有的打包器把一小段拆成每 8 帧一个 trun）：后面的 trun 在时间和数据位置上都接着前面的排，
+            // 不能每个都回到这一小段的起点 —— 否则解码时间每 8 帧回一次 0，合成时就报「dts 必须严格递增」
+            var trafOffset = nextMdatAfter(moof)
             for (trun in Boxes.childrenOfType(raf, traf, "trun")) {
                 val t = ByteReader(Boxes.payload(raf, trun))
                 val version = t.u8()
@@ -399,8 +404,8 @@ class Mp4Reader(file: File) : Closeable {
                 val count = t.u32().toInt()
                 val dataOffset = if (tf and 0x1 != 0) t.i32().toLong() else null
                 val firstFlags = if (tf and 0x4 != 0) t.u32() else null
-                var offset = dataOffset?.let { base + it } ?: nextMdatAfter(moof)
-                var dts = baseDts ?: if (b.dts.size > 0) b.dts[b.dts.size - 1] + b.lastDuration else 0L
+                var offset = dataOffset?.let { base + it } ?: trafOffset
+                var dts = trafDts
                 for (i in 0 until count) {
                     val dur = if (tf and 0x100 != 0) t.u32() else defDur
                     val size = if (tf and 0x200 != 0) t.u32() else defSize
@@ -427,6 +432,9 @@ class Mp4Reader(file: File) : Closeable {
                     dts += step
                     b.lastDuration = step
                 }
+                // 同一个 traf 里的下一个 trun 从这里接着排
+                trafDts = dts
+                trafOffset = offset
             }
         }
     }

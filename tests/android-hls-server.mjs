@@ -158,6 +158,13 @@ export async function startHlsServer({ root: customRoot } = {}) {
     const pathname = decodeURIComponent(u.pathname);
     requests.push({ method: req.method, path: pathname, query: u.search, headers: req.headers });
 
+    // 播放列表地址以 JSON 转义的写法写在页面的脚本里（\/ 和 \u0026），每个清晰度一个，页面自己不发任何请求
+    if (pathname === '/page-json.html') {
+      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
+      res.end(jsonPlaylistsPage(`http://${HOST}:${port}`));
+      return;
+    }
+
     // 分段地址过期
     if (pathname === '/expiring/index.m3u8') {
       expiring.playlistFetches++;
@@ -235,4 +242,27 @@ function isFile(file) {
   } catch {
     return false;
   }
+}
+
+/**
+ * 测试页 page-json.html：播放列表地址写在页面脚本的 JSON 数据里，是 JSON 转义过的写法（\/、\u0026），
+ * 每个清晰度各一个地址，旁边带着 height / quality —— 不少视频站的播放器配置就是这个样子。
+ * 页面上没有 <video>，也不会自己去请求播放列表：App 必须还原转义之后在源码里找，再按所选清晰度挑。
+ * 最高清的一路故意排在最前面，「选对了」不可能是碰巧取了第一个。
+ * @param base 模拟器眼里这台电脑的地址（http://10.0.2.2:端口）
+ */
+function jsonPlaylistsPage(base) {
+  const esc = (p) => `${base}/${p}`.replace(/\//g, '\\/').replace(/&/g, '\\u0026');
+  const defs = [
+    ['720', 720, 1280, esc('ts-aes/index.m3u8?token=a&x=1')], // 带查询参数：\u0026 也要还原
+    ['480', 480, 854, esc('fmp4/index.m3u8')],
+    ['240', 240, 426, esc('ts-plain/index.m3u8')],
+  ];
+  const json = defs.map(([q, h, w, url]) => `{"format":"hls","quality":"${q}","height":${h},"width":${w},"videoUrl":"${url}"}`).join(',');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>JSON 里的播放列表</title></head><body>
+<p>播放器配置写在下面的脚本里。</p>
+<script>
+  var playerData = {"mediaDefinitions":[${json}]};
+</script>
+</body></html>`;
 }

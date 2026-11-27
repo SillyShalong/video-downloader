@@ -307,25 +307,9 @@ class Mp4MuxerTest {
     @Throws(Exception::class)
     fun `分片文件里 sample 表不为空时，表里的 sample 排在分片前面一起读出来，关键帧标志也认得`() {
         val ftyp = box("ftyp", words(0x69736F6D, 512))
-        val mvhd = box("mvhd", full(0, 0, words(0, 0, 1000, 0) + ByteArray(80)))
-        val tkhd = box("tkhd", full(0, 0, words(0, 0, 1, 0, 0) + ByteArray(60)))
-        val hdlr = box("hdlr", full(0, 0, ByteWriter().apply { u32(0); fourcc("vide"); zeros(12) }.toBytes()))
 
         // moov 里的 sample 表：3 个 sample（时长各 10），数据在紧跟着的 mdat 里；没有 stss，都算关键帧
-        fun moov(firstSampleOffset: Int, defaultFlags: Int): ByteArray {
-            val stbl = box(
-                "stbl",
-                box("stsd", full(0, 0, words(1) + entry("avc1"))) +
-                    box("stts", full(0, 0, words(1, 3, 10))) +
-                    box("stsz", full(0, 0, words(0, 3, 3, 4, 5))) +
-                    box("stsc", full(0, 0, words(1, 1, 3, 1))) +
-                    box("stco", full(0, 0, words(1, firstSampleOffset))),
-            )
-            val mdia = box("mdia", box("mdhd", full(0, 0, words(0, 0, 1000, 0))) + hdlr + box("minf", stbl))
-            // trex：分片里 sample 的默认值 —— 时长 10、标志取 [defaultFlags]
-            val mvex = box("mvex", box("trex", full(0, 0, words(1, 1, 10, 0, defaultFlags))))
-            return box("moov", mvhd + box("trak", tkhd + mdia) + mvex)
-        }
+        fun moov(firstSampleOffset: Int, defaultFlags: Int): ByteArray = videoMoov(firstSampleOffset, defaultFlags)
 
         val mdat1 = box("mdat", "aaa".toByteArray() + "bbbb".toByteArray() + "ccccc".toByteArray())
         val mdat2 = box("mdat", "dd".toByteArray() + "eeeeee".toByteArray())
@@ -371,6 +355,95 @@ class Mp4MuxerTest {
             }
         }
     }
+    /**
+     * 一个 traf 里有多个 trun。ffmpeg、YouTube 都是每个 traf 一个 trun，但有的 HLS 打包器把一小段拆成
+     * 每 8 帧一个 trun（实测某个站点的 fMP4 分段就是这样：一个 traf 里 30 多个 trun）。
+     * 以前每读一个 trun 都把解码时间重置回这一小段的起点，第 2 个 trun 又从 0 开始 ——
+     * 合成时报「dts 必须严格递增（0 <= 21021）」，这个视频就下不了。
+     * trun 没给数据偏移时同理：要接着上一个 trun 的数据往后排，而不是每个都从 mdat 开头算。
+     * 另外：traf 没有 tfdt 时，接着这一路上一个 sample 的结束时间。
+     */
+    @Test
+    @Throws(Exception::class)
+    fun `一个 traf 里有多个 trun：解码时间和数据位置接着前面的排；没有 tfdt 的 traf 接着上一个分片`() {
+        val ftyp = box("ftyp", words(0x69736F6D, 512))
+        val defaultFlags = 0x01010000 // 非关键帧
+        val firstFlags = 0x02000000 // 关键帧
+        val mdat1 = box("mdat", "aaa".toByteArray() + "bbbb".toByteArray() + "ccccc".toByteArray())
+        // 分片的数据在 moof 之后的 mdat 里；trun 的数据偏移以 moof 开头为基准
+        fun moofA(o1: Int, o2: Int) = box(
+            "moof",
+            box("mfhd", full(0, 0, words(1))) +
+                box(
+                    "traf",
+                    box("tfhd", full(0, 0x020000, words(1))) + // default-base-is-moof
+                        box("tfdt", full(1, 0, ByteWriter().apply { u64(30) }.toBytes())) +
+                        // 第一个 trun：给了数据偏移、首个 sample 的标志、每个 sample 的大小
+                        box("trun", full(0, 0x205, words(2, o1, firstFlags, 2, 6))) +
+                        // 第二个 trun：时间接着排，数据偏移指到自己那段数据
+                        box("trun", full(0, 0x201, words(2, o2, 5, 3))) +
+                        // 第三个 trun：没给数据偏移 —— 数据紧跟在上一个 trun 的后面
+                        box("trun", full(0, 0x200, words(1, 4))),
+                ),
+        )
+        val sizeA = moofA(0, 0).size
+        val mdat2 = box(
+            "mdat",
+            "dd".toByteArray() + "eeeeee".toByteArray() + "fffff".toByteArray() + "ggg".toByteArray() + "hhhh".toByteArray(),
+        )
+        // 第二个分片：traf 没有 tfdt，解码时间接着上一个分片的最后一个 sample 往下走
+        fun moofB(o: Int) = box(
+            "moof",
+            box("mfhd", full(0, 0, words(2))) +
+                box("traf", box("tfhd", full(0, 0x020000, words(1))) + box("trun", full(0, 0x201, words(2, o, 1, 2)))),
+        )
+        val sizeB = moofB(0).size
+        val mdat3 = box("mdat", "i".toByteArray() + "jj".toByteArray())
+
+        val sizeMoov = videoMoov(0, defaultFlags).size
+        val head = ftyp + videoMoov(ftyp.size + sizeMoov + 8, defaultFlags) + mdat1
+        val a = moofA(sizeA + 8, sizeA + 8 + 8) // "dd" + "eeeeee" 一共 8 字节
+        val partB = head + a + mdat2
+        val f = File.createTempFile("multi-trun", ".mp4")
+        try {
+            FileOutputStream(f).use { it.write(partB + moofB(sizeB + 8) + mdat3) }
+            Mp4Reader(f).use { r ->
+                val t = r.tracks.single()
+                assertEquals(10, t.sampleCount)
+                // 表里 0 10 20；分片 A 从 30 起，5 个 sample 一路排下去；分片 B 没有 tfdt，从 80 接着
+                assertArrayEquals(longArrayOf(0, 10, 20, 30, 40, 50, 60, 70, 80, 90), t.dts)
+                assertArrayEquals(longArrayOf(3, 4, 5, 2, 6, 5, 3, 4, 1, 2), t.sizes)
+                assertTrue(t.sync.contentEquals(booleanArrayOf(true, true, true, true, false, false, false, false, false, false)))
+                val buf = ByteArray(16)
+                val texts = (0 until t.sampleCount).map { i ->
+                    val n = r.readSample(t, i, buf)
+                    String(buf, 0, n, Charsets.ISO_8859_1)
+                }
+                assertEquals(listOf("aaa", "bbbb", "ccccc", "dd", "eeeeee", "fffff", "ggg", "hhhh", "i", "jj"), texts)
+            }
+        } finally {
+            f.delete()
+        }
+    }
+
+    /** 只有一路视频轨的 moov：sample 表里 3 个 sample（时长各 10，数据在 [firstSampleOffset] 处）；trex 给出分片 sample 的默认时长和默认标志 */
+    private fun videoMoov(firstSampleOffset: Int, defaultFlags: Int): ByteArray {
+        val mvhd = box("mvhd", full(0, 0, words(0, 0, 1000, 0) + ByteArray(80)))
+        val tkhd = box("tkhd", full(0, 0, words(0, 0, 1, 0, 0) + ByteArray(60)))
+        val hdlr = box("hdlr", full(0, 0, ByteWriter().apply { u32(0); fourcc("vide"); zeros(12) }.toBytes()))
+        val stbl = box(
+            "stbl",
+            box("stsd", full(0, 0, words(1) + entry("avc1"))) +
+                box("stts", full(0, 0, words(1, 3, 10))) +
+                box("stsz", full(0, 0, words(0, 3, 3, 4, 5))) +
+                box("stsc", full(0, 0, words(1, 1, 3, 1))) +
+                box("stco", full(0, 0, words(1, firstSampleOffset))),
+        )
+        val mdia = box("mdia", box("mdhd", full(0, 0, words(0, 0, 1000, 0))) + hdlr + box("minf", stbl))
+        val mvex = box("mvex", box("trex", full(0, 0, words(1, 1, 10, 0, defaultFlags))))
+        return box("moov", mvhd + box("trak", tkhd + mdia) + mvex)
+    }
+
     private fun box(type: String, payload: ByteArray): ByteArray =
         ByteWriter(8 + payload.size).apply { u32((8 + payload.size).toLong()); fourcc(type); bytes(payload) }.toBytes()
 

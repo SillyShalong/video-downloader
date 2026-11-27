@@ -460,9 +460,14 @@ function waitNewTask(before, timeout = 15000) {
   });
 }
 
-/** 真实输入链接 → 点「开始下载」→ 返回新建的任务 */
-async function submitAndCatch(c, { url, timeout = 15000 }) {
+/** 真实输入链接 →（可选：点选清晰度，[qualityItem] 是「清晰度」分段控件的第几项）→ 点「开始下载」→ 返回新建的任务 */
+async function submitAndCatch(c, { url, timeout = 15000, qualityItem = 0 }) {
   await typeInto(c, url);
+  if (qualityItem) {
+    const selected = () => c.evaluate(`document.querySelector('#quality .ant-segmented-item-selected')?.textContent || ''`);
+    await c.tap(`#quality .ant-segmented-item:nth-of-type(${qualityItem})`);
+    await waitFor(`清晰度选为第 ${qualityItem} 项（${await selected()}）`, async () => /p$/.test(await selected()), { timeout: 5000 });
+  }
   const before = await taskIds();
   c.net.reset();
   await c.tap('#btn');
@@ -850,10 +855,8 @@ test('pause-resume-yt: 下载中途点「暂停」→ 点「恢复」从断点�
   await resetUi(c);
   // 这个用例验证的是「暂停后从断点继续」，和清晰度无关：选 360p 再下。最佳清晰度下这个视频有两百多 MB，
   // 在模拟器的网速上要二十多分钟才下得完，网络稍差就会超时；360p 只有它的六分之一
-  await c.tap('#quality .ant-segmented-item:nth-of-type(5)');
-  await waitFor('清晰度选为 360p', () => c.evaluate(`document.querySelector('#quality .ant-segmented-item-selected')?.textContent.includes('360p')`), { timeout: 5000 });
   const since = deviceNow();
-  const t = await submitAndCatch(c, { url: URLS.ytLong, timeout: 30000 });
+  const t = await submitAndCatch(c, { url: URLS.ytLong, timeout: 30000, qualityItem: 5 });
 
   // 等视频流下了几 MB 再暂停（太少的话「已有 N MB」里的 N 会是 0，看不出是从断点继续的）
   const running = await waitTask(c, t.id, (x) => x.status === 'running' && x.percent >= 8, '下载进度 ≥ 8%', 120000);
@@ -1001,17 +1004,45 @@ async function withHlsDomains(domains, fn) {
 }
 
 /** 走一遍真实界面下载，等完成并返回任务和落盘文件 */
-async function downloadThroughUi(h, url, localName, label, { timeout = 180000 } = {}) {
+async function downloadThroughUi(h, url, localName, label, { timeout = 180000, qualityItem = 0 } = {}) {
   const c = h.c;
   await resetUi(c);
   const since = deviceNow();
-  const t = await submitAndCatch(c, { url, timeout: 30000 });
+  const t = await submitAndCatch(c, { url, timeout: 30000, qualityItem });
   const done = await waitTask(c, t.id, (x) => x.status === 'done', `${label}：任务完成`, timeout);
   await waitFor(`${label}：界面首行变为完成`, () => rowStatusIs(c, 'done'), { timeout: 10000 });
   console.log('    日志: ' + (done.log || []).join(' | '));
   const file = checkDownloaded(done, DEFAULT_DIR, since, localName, label);
   return { t, done, file };
 }
+
+test('hls-page-json: 地址转义着写在网页的 JSON 里（每个清晰度一个）→ 找得到，并按所选清晰度挑一路', async (h) => {
+  const hls = h.hls;
+  await withHlsDomains([new URL(hls.url('')).hostname], async () => {
+    // [清晰度控件的第几项, 应该用的那一路, 对应的 ffmpeg 参考]。不选清晰度时用最高的一路（它排在页面最前面）
+    const cases = [
+      [5, '/ts-plain/index.m3u8', 'ts-plain.mp4', '选 360p → 240p 那一路'],
+      [4, '/fmp4/index.m3u8', 'fmp4.mp4', '选 540p → 480p 那一路'],
+      [0, '/ts-aes/index.m3u8', 'ts-aes.mp4', '不选（最佳）→ 720p 那一路'],
+    ];
+    for (const [item, picked, refName, what] of cases) {
+      hls.requests.length = 0;
+      const { done, file } = await downloadThroughUi(h, hls.url('page-json.html'), `hls-json-${refName}`, `HLS 网页（JSON）：${what}`, { qualityItem: item });
+      assert.equal(done.title, 'JSON 里的播放列表', '应使用网页标题作为标题');
+      const log = (done.log || []).join('\n');
+      assert.match(log, /网页上写着 3 档清晰度，用了 (\d+)p 的那一路/, `日志应说明页面上有几档、用了哪一档:\n${log}`);
+      const played = hls.requests.filter((r) => /^\/(ts-plain|fmp4|ts-aes)\/index\.m3u8$/.test(r.path)).map((r) => r.path);
+      assert.deepEqual([...new Set(played)], [picked], `${what}：应只请求所选的那一路的播放列表`);
+      if (picked === '/ts-aes/index.m3u8') {
+        assert.equal(hls.requests.find((r) => r.path === picked).query, '?token=a&x=1', '\\u0026 应还原成 &');
+      }
+      const ref = path.join(hls.ref, refName);
+      const frames = assertSameVideo(file.local, ref, `HLS 网页（JSON）：${what} vs ffmpeg 参考`);
+      assertSameAudio(file.local, ref, `HLS 网页（JSON）：${what} 音频`);
+      console.log(`    ${what}：${picked}，与 ffmpeg 参考逐帧一致（${frames} 帧）`);
+    }
+  });
+});
 
 test('hls-direct: 直接的 m3u8 链接（主列表 → AES-128 加密的 TS 分段）→ 下载并转成 MP4，与 ffmpeg 的参考逐帧一致', async (h) => {
   const hls = h.hls;

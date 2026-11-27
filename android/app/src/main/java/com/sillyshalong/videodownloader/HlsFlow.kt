@@ -30,15 +30,17 @@ internal object HlsFlow {
         val dir = engine.partDir(t)
         if (!dir.isDirectory && !dir.mkdirs()) throw Http.ApiException("无法创建缓存目录（存储空间不足？）")
 
+        // 清晰度上限（短边像素）：没选就是不限
+        val maxSide = t.quality?.toIntOrNull() ?: Int.MAX_VALUE
+
         // 1) 找到播放列表地址
         var found = if (Urls.isDirectPlaylist(t.url)) {
             HlsEngine.Result(t.url, t.url, null, emptyMap())
         } else {
             engine.stage(t, "打开网页查找视频地址")
-            HlsEngine.extract(t.url, flag)
+            HlsEngine.extract(t.url, flag, maxSide).also { it.note?.let { n -> engine.log(t, n) } }
         }
         val headers = HashMap(found.headers)
-        val maxSide = t.quality?.toIntOrNull() ?: Int.MAX_VALUE
 
         /** 2) 读播放列表、选清晰度（刷新分段地址时也会再调一次） */
         fun load(logQuality: Boolean = false): HlsPlaylist.Media {
@@ -98,7 +100,7 @@ internal object HlsFlow {
                 // 播放列表地址本身也失效了：回到网页重新找一遍（网页的 Cookie 也一并更新）
                 if (Urls.isDirectPlaylist(t.url) || (e.code != 401 && e.code != 403 && e.code != 410)) throw e
                 engine.log(t, "播放列表地址已失效，重新打开网页获取")
-                found = HlsEngine.extract(t.url, flag)
+                found = HlsEngine.extract(t.url, flag, maxSide)
                 headers.clear()
                 headers.putAll(found.headers)
                 load()
