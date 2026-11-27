@@ -11,7 +11,7 @@
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)](https://react.dev/)
 [![Ant Design](https://img.shields.io/badge/Ant_Design-6-1677ff?logo=antdesign&logoColor=white)](https://ant.design/)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-89%20desktop%20·%2040%20Android-brightgreen)](#-automated-tests)
+[![Tests](https://img.shields.io/badge/tests-91%20desktop%20·%2041%20Android-brightgreen)](#-automated-tests)
 
 **Desktop app + CLI + Android app** · Quality selection · Real-time speed · Pause/Cancel · Download history · H.264 output · Bilingual UI
 
@@ -91,7 +91,7 @@ The Android app runs **entirely on the phone** — it does not need the desktop 
 |---|---|
 | **YouTube** | Stream URLs resolved on-device (via the [NewPipeExtractor](https://github.com/TeamNewPipe/NewPipeExtractor) library); video + audio streams are downloaded and muxed into one MP4 on the phone. H.264 up to 1080p; audio-only saves as `.m4a` |
 | **Bilibili** | Standalone engine (no yt-dlp). Multi-part videos are detected and selectable |
-| **HLS streaming sites** | Paste a `.m3u8` link directly, or add the site's domain in ⚙ Settings and paste the page link. Encrypted (AES-128) and fMP4 streams are supported |
+| **HLS streaming sites** | Paste a `.m3u8` link directly, or add the site's domain in ⚙ Settings and paste the page link. The app opens the page itself and finds the playlist: from the player's requests, a `<video>` element, or addresses written in the page's script / JSON data (escaped or not). When a page lists one playlist per quality, the one matching the chosen quality is used. Encrypted (AES-128) and fMP4 streams are supported |
 | **Cloudflare checks** | If a page shows a human-verification challenge, it opens in an in-app window — complete the check there and the download continues automatically |
 | **Save to any folder** | "Browse…" opens the system folder picker — it starts inside the current folder, so "Use this folder" is one tap away; files go to `Download/VideoDownloader` by default |
 | **Control** | Pause / cancel / retry, all resuming from where they stopped; expired segment URLs (HTTP 403) are refreshed automatically; 3 tasks download at once by default (configurable); real-time speed, download history, proxy (HTTP / SOCKS5), bilingual UI |
@@ -122,21 +122,21 @@ npm run android:apk     # → android/app/build/outputs/apk/debug/app-debug.apk
 ## 🧪 Automated Tests
 
 ```bash
-npm test                    # Desktop: build frontend + all tests (89)
+npm test                    # Desktop: build frontend + all tests (91; the 2 that need the internet are skipped by default)
 npm run test:gui            # Desktop GUI regression (headless Edge drives the real page)
 npm run test:hls            # Desktop HLS engine / generic downloader: resuming after segment URLs expire (local test source, no internet needed)
 npm run test:network        # Desktop: enable external-network tests
 
-npm run test:android        # Android: JVM unit tests (40) — needs JDK 21 + Android SDK
+npm run test:android        # Android: JVM unit tests (41) — needs JDK 21 + Android SDK
 npm run test:android:media  # Android: muxer vs ffmpeg, frame by frame (on the PC, no device)
 npm run test:android:e2e    # Android: real-GUI E2E on an emulator (adb taps/typing, ffmpeg verifies files); needs ANDROID_HOME or adb on PATH
 npm run test:android:big    # Android: 4GiB big-file regression — needs an emulator with ≥ 11 GB free storage and adb root; see tests/android-big-file-check.mjs
 ```
 
-- **Desktop (89)**: site detection, share-text parsing, download args (H.264 lock regression; quality caps also apply to sites that only offer muxed streams), stream source (yt-dlp output parsing, host → IP, proxy case), proxy-or-direct marker (fixed-direct sites stay direct with a proxy configured), proxy validation, explorer command line, download task pipeline (SSE → disk), retry/pause/cancel, parallel downloads (3 at once by default, the 4th queues), history persistence, multi-source selection, anti-flicker, modal close, remote-mode errors — and **resuming after segment URLs expire**: a local server rotates its token every few segments, and both the HLS engine and the yt-dlp path must finish the download, fetch each segment exactly once, and produce byte-identical output to an error-free run; an unreachable segment has to fail loudly instead of leaving a half-finished file, and cancelling kills the process immediately while keeping the resume point.
-- **Android JVM (40)**: MP4 writer/reader round-trips (timestamps, keyframes, edit lists, B-frames, fragmented files whose sample table is not empty), m3u8 parsing, MPEG-TS/PES construction, ADTS splitting, AES-128 decryption, URL/site detection, filename sanitizing, finalising a TS file larger than 2 GiB.
+- **Desktop (91)**: site detection, share-text parsing, download args (H.264 lock regression; quality caps also apply to sites that only offer muxed streams), stream source (yt-dlp output parsing, host → IP, proxy case), proxy-or-direct marker (fixed-direct sites stay direct with a proxy configured), proxy validation, explorer command line, download task pipeline (SSE → disk), retry/pause/cancel, parallel downloads (3 at once by default, the 4th queues), history persistence, multi-source selection, anti-flicker, modal close, remote-mode errors — and **resuming after segment URLs expire**: a local server rotates its token every few segments, and both the HLS engine and the yt-dlp path must finish the download, fetch each segment exactly once, and produce byte-identical output to an error-free run; an unreachable segment has to fail loudly instead of leaving a half-finished file, and cancelling kills the process immediately while keeping the resume point.
+- **Android JVM (41)**: MP4 writer/reader round-trips (timestamps, keyframes, edit lists, B-frames, fragmented files whose sample table is not empty, a `traf` with several `trun`s, a fragment without `tfdt` continuing after the previous one), m3u8 parsing, MPEG-TS/PES construction, ADTS splitting, AES-128 decryption, URL/site detection, filename sanitizing, finalising a TS file larger than 2 GiB.
 - **Android media check**: our muxer's output must match `ffmpeg -c copy` *frame by frame* (picture hash + presentation time + keyframe table), audio sample-exact, A/V start alignment, zero decode errors — on synthetic media (with B-frames), fragmented MP4, HLS fMP4, and with `--yt` real YouTube streams.
-- **Android E2E (26 scenarios)**: on a real emulator UI — launch, Bilibili/YouTube/HLS downloads (files pulled and verified with ffmpeg), system folder picker (starts in the current folder, picking a folder, cancelling, invalid folder), multi-part selection, pause/resume, resume after the app is killed, cancel, detail drawer, settings, delete history, HLS download continuing from its resume point after segment URLs expire, retry after a mid-download HLS failure without re-downloading, Bilibili pause/resume, YouTube audio-only, parallel downloads (3 at once by default, serial when set to 1, YouTube and HLS mixed).
+- **Android E2E (27 scenarios)**: on a real emulator UI — launch, Bilibili/YouTube/HLS downloads (files pulled and verified with ffmpeg), system folder picker (starts in the current folder, picking a folder, cancelling, invalid folder), multi-part selection, pause/resume, resume after the app is killed, cancel, detail drawer, settings, delete history, HLS download continuing from its resume point after segment URLs expire, retry after a mid-download HLS failure without re-downloading, a page whose per-quality playlists exist only as escaped JSON (the chosen quality has to be used), Bilibili pause/resume, YouTube audio-only, parallel downloads (3 at once by default, serial when set to 1, YouTube and HLS mixed).
 - **Android big-file regression**: a 4 GiB HLS video (600 segments) — the last few segments are downloaded from a pre-seeded resume point, then the full "system TS extractor → mux → save to Downloads" path runs; the output is pulled to the PC (SHA-256 verified) and matches the ffmpeg reference on all 30,000 frames. The small-file cases never reach the "file larger than 2 GiB" code paths, so this runs separately.
 
 ## 🛠 Development
