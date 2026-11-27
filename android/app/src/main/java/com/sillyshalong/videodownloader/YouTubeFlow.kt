@@ -24,10 +24,16 @@ internal object YouTubeFlow {
     private const val MUX_FROM = 0.8
 
     fun run(engine: TaskEngine, t: Task, flag: CancelFlag) {
-        val ex = YouTubeEngine.extract(t.url, t.quality, t.audio, flag)
+        var ex = YouTubeEngine.extract(t.url, t.quality, t.audio, flag)
         val title = Storage.sanitizeFileName(ex.title)
         engine.setTitle(t, ex.title)
         val safeId = ex.id.replace(Regex("[^A-Za-z0-9_-]"), "")
+
+        /** 重新解析一遍（下载地址带有效期，过期后要换新的），标题也跟着更新 */
+        fun reextract(): YouTubeEngine.Extraction = YouTubeEngine.extract(t.url, t.quality, t.audio, flag).also {
+            ex = it
+            engine.setTitle(t, it.title)
+        }
 
         // ---- 单文件：仅音频 / 音视频合一 ----
         val audioOnly = ex.video == null
@@ -35,40 +41,57 @@ internal object YouTubeFlow {
         if (ex.muxed || audioOnly) {
             val stream = single ?: throw Http.ApiException("没有找到可下载的媒体流")
             val ext = if (audioOnly) "m4a" else "mp4"
-            val spec = DownloadSpec(
-                title = ex.title,
-                fileName = "$title [$safeId].$ext",
-                url = stream.url,
-                mime = if (audioOnly) "audio/mp4" else "video/mp4",
-            )
+            val mime = if (audioOnly) "audio/mp4" else "video/mp4"
             engine.stage(t, if (audioOnly) "下载音频流" else "下载视频流")
-            engine.saveDirect(t, spec, flag, 0.0, 1.0)
+            engine.saveResumable(
+                t,
+                DownloadSpec(ex.title, "$title [$safeId].$ext", stream.url, mime = mime),
+                flag,
+            // 地址过期时重新解析一遍，换新地址从断点继续
+            ) {
+                val fresh = reextract()
+                val s = fresh.video ?: fresh.audio ?: throw Http.ApiException("没有找到可下载的媒体流")
+                DownloadSpec(fresh.title, "$title [$safeId].$ext", s.url, mime = mime)
+            }
             return
         }
 
         // ---- 两路流：先下到缓存，再合成 ----
-        val video = ex.video
         val audio = ex.audio ?: throw Http.ApiException("没有找到音频流")
         val dir = engine.partDir(t)
         if (!dir.isDirectory && !dir.mkdirs()) throw Http.ApiException("无法创建缓存目录（存储空间不足？）")
         val videoFile = File(dir, "video.mp4")
         val audioFile = File(dir, "audio.m4a")
 
-        engine.stage(t, "下载视频流（${video.label}）")
-        engine.log(t, "视频流 itag ${video.itag}（${video.label}）· 音频流 itag ${audio.itag}")
+        fun specOf(url: String, name: String, mime: String) = DownloadSpec(ex.title, name, url, mime = mime)
+
+        fun resumed(label: String): (Long) -> Unit = { bytes ->
+            engine.log(t, if (label == "视频流") "$label 从断点继续（已有 ${bytes / 1024 / 1024} MB）" else "$label 从断点继续（已有 ${bytes / 1024} KB）")
+        }
+
+        engine.stage(t, "下载视频流（${ex.video!!.label}）")
+        engine.log(t, "视频流 itag ${ex.video!!.itag}（${ex.video!!.label}）· 音频流 itag ${audio.itag}")
+        val video = ex.video!!
         HttpDownloader.toFile(
-            DownloadSpec(ex.title, "video.mp4", video.url, mime = "video/mp4"),
+            specOf(video.url, "video.mp4", "video/mp4"),
             videoFile,
             flag,
             engine.progress(t, flag, VIDEO_FROM, VIDEO_TO),
-        ) { engine.log(t, "视频流从断点继续（已有 ${it / 1024 / 1024} MB）") }
+            onResumed = resumed("视频流"),
+            onLog = { engine.log(t, it) },
+            // 地址过期：重新解析，换新地址从断点继续
+            refresh = { reextract().video?.let { specOf(it.url, "video.mp4", "video/mp4") } ?: throw Http.ApiException("重新解析后没有找到视频流") },
+        )
         engine.stage(t, "下载音频流")
         HttpDownloader.toFile(
-            DownloadSpec(ex.title, "audio.m4a", audio.url, mime = "audio/mp4"),
+            specOf(audio.url, "audio.m4a", "audio/mp4"),
             audioFile,
             flag,
             engine.progress(t, flag, AUDIO_FROM, AUDIO_TO),
-        ) { engine.log(t, "音频流从断点继续（已有 ${it / 1024} KB）") }
+            onResumed = resumed("音频流"),
+            onLog = { engine.log(t, it) },
+            refresh = { reextract().audio?.let { specOf(it.url, "audio.m4a", "audio/mp4") } ?: throw Http.ApiException("重新解析后没有找到音频流") },
+        )
 
         engine.stage(t, "合成音视频")
         t.update { percent = MUX_FROM * 100 }
@@ -92,6 +115,12 @@ internal object YouTubeFlow {
                     engine.markSaved(t, sink, size, 100.0)
                 }
             }
+        } catch (e: CancelledException) {
+            throw e
+        } catch (e: Exception) {
+            // 合成失败多半是流文件不完整或损坏：把缓存删掉，重试时重新下载（否则每次重试都在同一处失败）
+            dir.deleteRecursively()
+            throw e
         } finally {
             sink.close()
             if (!committed) sink.abort()

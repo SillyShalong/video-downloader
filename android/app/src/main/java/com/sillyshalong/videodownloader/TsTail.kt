@@ -94,8 +94,10 @@ object TsTail {
      */
     fun appendNextFrame(file: File, nextAccessUnit: ByteArray): Int {
         if (nextAccessUnit.isEmpty() || file.length() < PACKET_SIZE * 2 || file.length() % PACKET_SIZE != 0L) return 0
-        val head = ByteArray(minOf(PACKET_SIZE * 400, file.length().toInt()))
-        file.inputStream().use { it.read(head) }
+        // 文件可能有几个 GiB（长的 HLS 视频很常见）：长度全程按 Long 算，截到缓冲区上限之后再转 Int。
+        // 以前直接 file.length().toInt()，超过 2GiB 就成了负数 —— 下载到 80% 开始合成时在这里崩。
+        val head = ByteArray(minOf(PACKET_SIZE * 400L, file.length()).toInt())
+        RandomAccessFile(file, "r").use { it.readFully(head) }
         val video = streams(head).firstOrNull { it.video } ?: return 0
         var cc = lastContinuityCounter(file, video.pid)
         // 1) 「下一帧」：声明了明确长度的 PES 包，后面再跟一个空包把它结束掉 ——

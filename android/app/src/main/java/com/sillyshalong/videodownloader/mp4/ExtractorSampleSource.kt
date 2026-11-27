@@ -4,11 +4,22 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import com.sillyshalong.videodownloader.Http
 import com.sillyshalong.videodownloader.TsTail
+import java.io.Closeable
 import java.io.File
+import java.io.IOException
 import java.nio.ByteBuffer
 
+private const val UNSET = Long.MIN_VALUE
+
 /**
- * 用系统 MediaExtractor 从 MPEG-TS / FLV 这类「没有现成 sample table」的文件里读出一路轨道。
+ * 用系统 MediaExtractor 从 MPEG-TS / FLV 这类「没有现成 sample table」的文件里读出音视频轨。
+ *
+ * 整个文件只开一个 MediaExtractor 实例（[TsDemuxer]），里面的轨道都选中、按文件里的顺序一起读走：
+ * 读到哪一路的 sample 就交给那一路的 [ExtractorSampleSource] 排队，等着被合成器取用。
+ *
+ * 不能「每路轨道各开一个实例、只选自己那一路」：系统解析器照样会解析文件里的所有轨道，
+ * 没被读走的那一路全堆在系统的解析器进程里 —— 实测堆到 600MB 左右那个进程就崩了，
+ * 十几分钟以上的视频合成到一半被截断。
  *
  * MediaExtractor 只给显示时间（pts），不给解码时间。带 B 帧的视频，解码顺序就是文件里的顺序，
  * 解码时间按下面的规则合成，显示时间原样保留——所以画面顺序、音画同步都和源一致：
@@ -17,13 +28,135 @@ import java.nio.ByteBuffer
  *           （不能取「解码顺序里相邻两帧的时间差」：带 B 帧时那是 2 帧、3 帧的间隔，甚至为负）
  *   音频轨：dts = pts
  * 负的显示偏移由 Mp4Writer 统一处理。
- *
- * @param kind "video" 或 "audio"：取文件里这一类的第一条轨道
  */
-class ExtractorSampleSource(file: File, kind: String) : SampleSource {
+class TsDemuxer(file: File) : Closeable {
+    private val extractor = MediaExtractor()
+    private val sources = ArrayList<ExtractorSampleSource>()
+
+    /** 整个文件的大小（进度用） */
+    internal val fileBytes = file.length()
+
+    /** 文件读完了（所有轨道都不会再有 sample） */
+    private var ended = false
+    private var released = false
+
+    /** 读到的媒体数据字节数、以及最后一个 sample 的显示时间：读完后用来核对文件是不是真的读完了 */
+    private var consumed = 0L
+    private var lastPtsUs = UNSET
+
+    init {
+        extractor.setDataSource(file.path)
+    }
+
+    /** 文件里这一类轨道（"video" / "audio"）的 (轨道下标, 格式)；没有返回 null */
+    private fun track(kind: String): Pair<Int, MediaFormat>? {
+        for (i in 0 until extractor.trackCount) {
+            val f = extractor.getTrackFormat(i)
+            if (f.getString(MediaFormat.KEY_MIME)?.startsWith("$kind/") == true) return i to f
+        }
+        return null
+    }
+
+    /** 为 [kind] 这一路建一个 sample 流（文件里没有这一路时抛 ApiException） */
+    fun source(kind: String): ExtractorSampleSource {
+        val (trackIndex, fmt) = track(kind)
+            ?: throw Http.ApiException(if (kind == "video") "视频流里没有可识别的视频轨" else "视频流里没有可识别的音频轨")
+        val source = ExtractorSampleSource(this, kind, trackIndex, fmt)
+        sources.add(source)
+        extractor.selectTrack(trackIndex)
+        return source
+    }
+
+    /**
+     * 继续从文件里读，直到 [source] 手上有 sample 可用，或者文件读完。
+     * 路上读到的别的轨道的 sample 交给那一路先排着（合成器马上就会来取，所以攒不了多少）。
+     * @return [source] 现在是否有 sample
+     */
+    internal fun feed(source: ExtractorSampleSource): Boolean {
+        while (source.isEmpty()) {
+            if (ended) return false
+            val trackIndex = extractor.sampleTrackIndex
+            if (trackIndex < 0 || extractor.sampleTime >= TsTail.FLUSH_PTS_US) {
+                // 到结尾了。显示时间大得离谱的只可能是文件末尾补的「下一帧」（见 TsTail）：真实数据到这儿就读完了。
+                // （解析器所在的系统进程崩了之后，这里也会表现成「到结尾了」——所以读完之后要用 [assertComplete] 核对）
+                ended = true
+                for (s in sources) s.finish()
+                return false
+            }
+            val owner = sources.firstOrNull { it.trackIndex == trackIndex }
+            if (owner == null) {
+                extractor.advance() // 别的轨道（没被选中的）的数据：跳过
+                continue
+            }
+            try {
+                consumed += owner.take()
+                if (lastPtsUs == UNSET || owner.lastRawPtsUs > lastPtsUs) lastPtsUs = owner.lastRawPtsUs
+            } catch (e: IOException) {
+                throw e
+            } catch (e: Exception) {
+                // 解析器出错（比如它所在的系统进程崩了之后的调用）
+                throw IOException("系统媒体解析器读取出错：${e.message ?: e.javaClass.simpleName}", e)
+            }
+        }
+        return true
+    }
+
+    /* 只给 ExtractorSampleSource 用的系统解析器接口（当前 sample 属于哪一路由 feed 判断过了） */
+    internal fun read(buf: ByteArray): Int = extractor.readSampleData(ByteBuffer.wrap(buf), 0)
+    internal fun sampleTimeUs(): Long = extractor.sampleTime
+    internal fun sampleIsSync(): Boolean = extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0
+    internal fun advance() = extractor.advance()
+
+    /** 各路里最早的显示时间（微秒）；一路数据都没有时为 null */
+    private fun firstPtsUs(): Long? = sources.mapNotNull { it.firstPtsUsOrNull() }.minOrNull()
+
+    /**
+     * 文件读完之后调用：核对真的读完了。
+     *
+     * 系统解析器中途出错（它所在的进程崩了）时，「读不出来」在接口上和「读完了」一模一样。
+     * 不核对的话，就会得到一个只有前半截的文件还显示成功。
+     * @param expectedSeconds 这个文件应有的时长（秒）；<= 0 表示不知道，只按读到的数据量粗略判断
+     */
+    fun assertComplete(expectedSeconds: Double) {
+        val read = consumed.toDouble() / fileBytes.coerceAtLeast(1)
+        val first = firstPtsUs()
+        val spanSeconds = if (first == null || lastPtsUs == UNSET) 0.0 else (lastPtsUs - first) / 1_000_000.0
+        val short = if (expectedSeconds > 0) {
+            spanSeconds + COMPLETE_SLACK_SECONDS < expectedSeconds
+        } else {
+            read < MIN_READ_RATIO
+        }
+        if (short) {
+            val detail = "只读到 ${"%.1f".format(spanSeconds)} 秒 / ${"%.0f".format(read * 100)}% 的数据" +
+                if (expectedSeconds > 0) "（应有 ${"%.0f".format(expectedSeconds)} 秒）" else ""
+            throw IOException("系统媒体解析器中途中断了，文件不完整：$detail")
+        }
+    }
+
+    override fun close() {
+        if (released) return
+        released = true
+        runCatching { extractor.release() }
+    }
+
+    private companion object {
+        /** 时长上的宽限：播放列表里各段的时长只是近似值，允许差这么几秒 */
+        const val COMPLETE_SLACK_SECONDS = 3.0
+
+        /** 不知道应有长度时，读到的数据少于文件的这个比例就认为没读完 */
+        const val MIN_READ_RATIO = 0.4
+    }
+}
+
+/** 文件里的一路轨道（"video" 或 "audio"）；sample 由共用的 [TsDemuxer] 按文件顺序送进来 */
+class ExtractorSampleSource internal constructor(
+    private val demuxer: TsDemuxer,
+    private val kind: String,
+    internal val trackIndex: Int,
+    fmt: MediaFormat,
+) : SampleSource {
     private class Unit(val data: ByteArray, val ptsUs: Double, val sync: Boolean)
 
-    private val extractor = MediaExtractor()
     private val isVideo = kind == "video"
     private val hevc: Boolean
     private val sampleRate: Int
@@ -35,6 +168,8 @@ class ExtractorSampleSource(file: File, kind: String) : SampleSource {
     private var audioEndUs = -1.0 // 音频轨：上一帧结束的时刻（微秒），用来让帧接着排
     private var heldFrames: ArrayDeque<ByteArray>? = null // 音频轨：先扣住的第一个包
     private var firstAuReportedUs = 0.0
+    private var firstPtsUs = UNSET
+    private var rawPtsUs = UNSET
 
     private val dtsTicks: Long
     private var lastDts = -1L
@@ -43,38 +178,19 @@ class ExtractorSampleSource(file: File, kind: String) : SampleSource {
     private var windowSize = 0
     private var constantRate = true
 
-    /**
-     * 第一个 sample 的显示时间（微秒，未偏移）。
-     * 视频轨在构造后就可用；音频轨要等 [prime] 读过开头之后才可靠（见 [enqueueAudio]）。
-     * 可能是负数：这一路比另一路开始得早。
-     */
-    var firstPtsUs: Long
-        private set
-
     /** 各路轨道统一减去的时间偏移（微秒），让整份文件最早的一帧从 0 开始 */
     var shiftUs = 0L
 
-    override val totalBytes: Long = file.length()
+    /** 进度用：视频轨报整个文件的大小，音频轨报 0（音视频在同一个文件里，合成进度按文件算） */
+    override val totalBytes: Long = if (isVideo) demuxer.fileBytes else 0L
     override val spec: Mp4Writer.TrackSpec
     override var maxSampleSize: Int
         private set
 
+    /** 最近一个 sample 的显示时间（微秒，未偏移）；还没有数据时为 [UNSET] */
+    internal val lastRawPtsUs: Long get() = rawPtsUs
+
     init {
-        extractor.setDataSource(file.path)
-        var track = -1
-        var format: MediaFormat? = null
-        for (i in 0 until extractor.trackCount) {
-            val f = extractor.getTrackFormat(i)
-            if (f.getString(MediaFormat.KEY_MIME)?.startsWith("$kind/") == true) {
-                track = i
-                format = f
-                break
-            }
-        }
-        val fmt = format ?: run {
-            extractor.release()
-            throw Http.ApiException(if (isVideo) "视频流里没有可识别的视频轨" else "视频流里没有可识别的音频轨")
-        }
         val mime = fmt.getString(MediaFormat.KEY_MIME) ?: ""
         // TS 这类来源不一定每项都有：缺的用常见值补上
         fun int(key: String, fallback: Int): Int = if (fmt.containsKey(key)) runCatching { fmt.getInteger(key) }.getOrDefault(fallback) else fallback
@@ -92,10 +208,7 @@ class ExtractorSampleSource(file: File, kind: String) : SampleSource {
                 if (hevc) SampleEntries.hevc(unitsOf(32), unitsOf(33), unitsOf(34), width, height)
                 else SampleEntries.avc1(unitsOf(7), unitsOf(8), width, height)
             }
-            else -> {
-                extractor.release()
-                throw Http.ApiException("这段视频用了暂不支持的编码（$mime），无法转换成 MP4")
-            }
+            else -> throw Http.ApiException("这段视频用了暂不支持的编码（$mime），无法转换成 MP4")
         }
         dtsTicks = if (isVideo) 90_000L else sampleRate.toLong()
         frameTicks = 33_333L * dtsTicks / 1_000_000 // 先按 30fps 估，看过几帧后改为实测
@@ -109,8 +222,21 @@ class ExtractorSampleSource(file: File, kind: String) : SampleSource {
         )
         maxSampleSize = (int(MediaFormat.KEY_MAX_INPUT_SIZE, 1 shl 20).takeIf { it > 0 } ?: (1 shl 20)).coerceIn(1 shl 16, MAX_BUFFER)
         buffer = ByteArray(maxSampleSize)
-        extractor.selectTrack(track)
-        firstPtsUs = extractor.sampleTime
+    }
+
+    /** 第一个 sample 的显示时间（微秒，未偏移）；要等 [prime] 读过开头之后才有 */
+    fun firstPtsUs(): Long = firstPtsUsOrNull() ?: 0L
+
+    /** 第一个 sample 的显示时间（微秒，未偏移），还没读到时为 null */
+    internal fun firstPtsUsOrNull(): Long? = if (firstPtsUs == UNSET) null else firstPtsUs
+
+    /** 手上没有排着队的 sample 了 */
+    internal fun isEmpty(): Boolean = queue.isEmpty()
+
+    /** 文件读完了：不会再有新数据进来 */
+    internal fun finish() {
+        fed = true
+        flushHeldAudio()
     }
 
     override fun current(): Sample? {
@@ -134,39 +260,44 @@ class ExtractorSampleSource(file: File, kind: String) : SampleSource {
         pending = null
     }
 
-    /**
-     * 一直从 MediaExtractor 取数据，直到队列里有可用的 sample 或者到结尾。
-     * 调用方在合成前先调一次（[prime]），这之后 [firstPtsUs] 才是可靠的。
-     */
-    private fun fill() {
-        if (fed) return
-        while (queue.isEmpty()) {
-            if (extractor.sampleTrackIndex < 0 || extractor.sampleTime >= TsTail.FLUSH_PTS_US) {
-                // 到结尾了。显示时间大得离谱的只可能是文件末尾补的「下一帧」（见 TsTail）：真实数据到这儿就读完了
-                fed = true
-                flushHeldAudio()
-                return
-            }
-            val n = readCurrent()
-            val ptsUs = extractor.sampleTime
-            val sync = extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0
-            val alive = extractor.sampleTrackIndex >= 0
-            extractor.advance() // 数据已经读出来了，马上前进，下一次需要时再读
-            if (n <= 0 || !alive) continue
-            if (isVideo) {
-                val data = SampleEntries.annexBToAvcc(buffer, n)
-                // 只有分隔符、参数集而没有画面数据的包不是一帧（比如文件末尾的收尾包），跳过
-                if (!SampleEntries.hasSlices(data, hevc)) continue
-                queue.add(Unit(data, ptsUs.toDouble(), sync))
-            } else {
-                // 系统解析器把同一个包里的所有 AAC 帧当作一个采样交出来，这里拆成单帧，时间依次顺延
-                enqueueAudio(ptsUs, SampleEntries.splitAdts(buffer, n) ?: listOf(buffer.copyOf(n)))
-            }
-        }
+    /** 合成前调用：让这一路先读到开头的数据，之后它的起点才可靠 */
+    fun prime() {
+        fill()
+        if (firstPtsUs == UNSET) queue.firstOrNull()?.let { firstPtsUs = Math.round(it.ptsUs) }
     }
 
-    /** 合成前调用：让各路轨道先读到开头的数据，之后 [firstPtsUs] 才可靠 */
-    fun prime() = fill()
+    /** 手上没有 sample 且文件还没读完：让 [TsDemuxer] 接着读 */
+    private fun fill() {
+        if (fed) return
+        demuxer.feed(this) // 文件读完时 TsDemuxer 会调用 finish()
+    }
+
+    /**
+     * 文件里当前的 sample 属于这一路：读出来、转成 MP4 用的格式、排进队列，然后前进到下一个 sample。
+     * 只由 [TsDemuxer.feed] 调用（它保证当前的 sample 就是这一路的）。
+     * @return 读到的字节数
+     */
+    internal fun take(): Int {
+        val n = readCurrent()
+        val ptsUs = demuxer.sampleTimeUs()
+        val sync = demuxer.sampleIsSync()
+        demuxer.advance() // 数据已经读出来了，马上前进，下一次需要时再读
+        if (n <= 0) {
+            // 解析器读不出数据。不是到结尾了（到结尾的情况 TsDemuxer 已经处理掉），是它出了错 ——
+            // 比如它所在的系统进程崩了。绝不能当成「读完了」：那会得到一个被截断的文件还显示成功
+            throw IOException("系统媒体解析器读取${if (isVideo) "视频" else "音频"}数据失败")
+        }
+        rawPtsUs = ptsUs
+        if (isVideo) {
+            val data = SampleEntries.annexBToAvcc(buffer, n)
+            // 只有分隔符、参数集而没有画面数据的包不是一帧（比如文件末尾的收尾包），跳过
+            if (SampleEntries.hasSlices(data, hevc)) queue.add(Unit(data, ptsUs.toDouble(), sync))
+        } else {
+            // 系统解析器把同一个包里的所有 AAC 帧当作一个采样交出来，这里拆成单帧，时间依次顺延
+            enqueueAudio(ptsUs, SampleEntries.splitAdts(buffer, n) ?: listOf(buffer.copyOf(n)))
+        }
+        return n
+    }
 
     /**
      * 把一个音频包里的帧排进队列。
@@ -222,7 +353,6 @@ class ExtractorSampleSource(file: File, kind: String) : SampleSource {
         return maxOf(lastDts + 1, minOf(pts, floor))
     }
 
-
     /**
      * 帧时长估计：最近若干帧的显示时间排序后，最小的相邻差就是一帧的时长。
      * 同时判断是不是定帧率（排序后相邻差都约等于整数个帧时长）。
@@ -251,20 +381,18 @@ class ExtractorSampleSource(file: File, kind: String) : SampleSource {
 
     /** 读取当前 sample 到 [buffer]，返回字节数（<= 0 表示没有数据） */
     private fun readCurrent(): Int {
-        var n = extractor.readSampleData(ByteBuffer.wrap(buffer), 0)
+        var n = demuxer.read(buffer)
         // 个别关键帧可能比格式里声明的最大值还大（系统此时返回 -1）：换更大的缓冲区再试
         var guard = 0
         while (n <= 0 && buffer.size < MAX_BUFFER && guard++ < 4) {
             buffer = ByteArray(minOf(buffer.size * 4, MAX_BUFFER))
             maxSampleSize = buffer.size
-            n = extractor.readSampleData(ByteBuffer.wrap(buffer), 0)
+            n = demuxer.read(buffer)
         }
         return n
     }
 
-    override fun close() {
-        extractor.release()
-    }
+    override fun close() = demuxer.close()
 
     companion object {
         /** 单个 sample 的缓冲区上限（64MB，正常视频远用不到） */

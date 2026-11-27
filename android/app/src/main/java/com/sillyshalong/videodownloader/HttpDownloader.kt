@@ -20,6 +20,9 @@ object HttpDownloader {
     private const val TAG = "HttpDownloader"
     private const val MAX_ATTEMPTS = 4
 
+    /** 换了地址还是停在同一个位置：连着这么多次就放弃（地址有效期短的大文件可以换很多次，不受这个限制） */
+    private const val MAX_FRUITLESS_REFRESHES = 3
+
     /** 进度回调：total <= 0 表示总大小未知；speed 为字节/秒 */
     fun interface Progress {
         fun onProgress(downloaded: Long, total: Long, speed: Long)
@@ -55,19 +58,28 @@ object HttpDownloader {
     /**
      * 下载到本地文件；已有 .part 时断点续传。返回文件大小。
      * @param onResumed 从断点继续时回调一次（参数：已有的字节数），用来在任务日志里说明
+     * @param onLog 需要让用户知道的事（地址过期后重新获取、重试……）
+     * @param refresh 下载地址失效（HTTP 401 / 403 / 410，多半是带有效期的链接过期了）时调用，
+     *        返回带着新地址的 [DownloadSpec]；之后的分段也用它。null = 不重新获取
      */
     @Throws(IOException::class)
     fun toFile(
-        spec: DownloadSpec,
+        spec0: DownloadSpec,
         file: File,
         flag: CancelFlag,
         onProgress: Progress,
         onResumed: ((Long) -> Unit)? = null,
+        onLog: ((String) -> Unit)? = null,
+        refresh: (() -> DownloadSpec)? = null,
     ): Long {
+        var spec = spec0
+        var fruitless = 0 // 换了地址还是停在同一个位置
+        var refreshedAt = -1 to -1L // 上一次换地址时在下载哪一段、下到了哪里
         file.parentFile?.mkdirs()
-        val count = spec.parts.size
         var finished = 0L // 前面各段已完成的字节数
-        for ((index, candidates) in spec.parts.withIndex()) {
+        var index = 0
+        while (index < spec.parts.size) {
+            val count = spec.parts.size
             val part = partFile(file, index, count)
             var expected = if (count == 1 && spec.totalBytes > 0) spec.totalBytes else -1L
             var failures = 0
@@ -81,8 +93,9 @@ object HttpDownloader {
                     onResumed?.invoke(offset)
                 }
                 var success = false
+                var refetched = false
                 var lastErr: IOException? = null
-                for (url in candidates) {
+                for (url in spec.parts[index]) {
                     flag.throwIfCancelled()
                     try {
                         val extra = if (offset > 0) mapOf("Range" to "bytes=$offset-") else emptyMap()
@@ -107,6 +120,26 @@ object HttpDownloader {
                             success = true
                             break
                         }
+                        // 地址过期：换一个新地址，从断点接着下（已经下好的部分不丢）。
+                        // 只要每次换地址之后都有进展就一直换（地址有效期短的大文件可以换很多次）；
+                        // 换了地址还是停在同一个位置，连着几次就说明不是有效期的问题，放弃
+                        val stuck = refreshedAt == index to offset && ++fruitless >= MAX_FRUITLESS_REFRESHES
+                        if (isExpired(e.code) && refresh != null && !stuck) {
+                            val fresh = try {
+                                refresh()
+                            } catch (e: CancelledException) {
+                                throw e
+                            } catch (_: Exception) {
+                                null // 重新获取失败：按普通失败处理，稍后用旧地址再试
+                            }
+                            if (fresh != null) {
+                                refreshedAt = index to offset
+                                spec = fresh
+                                onLog?.invoke("下载地址已过期（HTTP ${e.code}），已重新获取，从断点继续")
+                                refetched = true
+                                break
+                            }
+                        }
                         lastErr = e
                     } catch (e: IOException) {
                         lastErr = e
@@ -114,15 +147,24 @@ object HttpDownloader {
                     }
                 }
                 if (success) break
+                if (refetched) continue // 用新地址重来这一段
                 // 所有地址都失败：断点有进展就再试几轮，原地踏步则放弃
                 val stalled = part.length() == offset
-                if (++failures >= MAX_ATTEMPTS || (stalled && failures > candidates.size)) {
+                if (++failures >= MAX_ATTEMPTS || (stalled && failures > spec.parts[index].size)) {
                     throw lastErr ?: IOException("下载失败")
+                }
+                onLog?.invoke("下载中断（${lastErr?.message ?: "网络错误"}），从断点重试（第 $failures 次）")
+                try {
+                    Thread.sleep(1000L shl (failures - 1))
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
                 }
             }
             finished += part.length()
+            index++
         }
         file.delete()
+        val count = spec.parts.size
         if (!partFile(file, 0, count).renameTo(file)) {
             // 跨不了文件系统时退化为拼接（.part 与目标同目录，正常走不到这里）
             FileOutputStream(file).use { out -> for (i in 0 until count) partFile(file, i, count).inputStream().use { it.copyTo(out) } }
@@ -130,6 +172,9 @@ object HttpDownloader {
         for (i in 0 until count) partFile(file, i, count).delete()
         return file.length()
     }
+
+    /** 带有效期的链接过期时服务器常见的回应 */
+    private fun isExpired(code: Int): Boolean = code == 401 || code == 403 || code == 410
 
     /** 本次尝试已写出的字节数（判断失败后还能不能换地址重试） */
     private class Counter {

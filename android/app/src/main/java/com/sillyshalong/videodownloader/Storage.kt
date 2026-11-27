@@ -62,6 +62,9 @@ abstract class StorageSink : Closeable {
     /** 中途失败：删除半成品 */
     abstract fun abort()
 
+    /** 关闭时调用（Storage 用它撤销文件名占位） */
+    var onClosed: (() -> Unit)? = null
+
     private var closed = false
     final override fun close() {
         if (closed) return
@@ -71,6 +74,8 @@ abstract class StorageSink : Closeable {
         } catch (e: IOException) {
             // 系统的下载目录 / SAF 目录要到关闭时才真正报错（比如空间不足）
             throw StorageException("无法写入保存目录（存储空间不足或目录已不可用）", e)
+        } finally {
+            onClosed?.invoke()
         }
     }
 }
@@ -81,10 +86,14 @@ private class MediaStoreSink(
     displayName: String,
     override val target: OutputStream,
 ) : StorageSink() {
-    override val displayPath = "${Storage.DEFAULT_DIR}/$displayName"
+    override var displayPath = "${Storage.DEFAULT_DIR}/$displayName"
+        private set
 
     override fun commit() {
         resolver.update(fileUri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+        // 同一目录里有同名文件时（比如同时下几个没写标题的视频），系统是在文件「发布」这一刻才给改名加上 " (1)" 的。
+        // 所以发布之后要再读一次名字：任务里记的路径得是磁盘上真实的那个。
+        Storage.displayNameOf(resolver, fileUri)?.let { displayPath = "${Storage.DEFAULT_DIR}/$it" }
     }
 
     override fun abort() {
@@ -226,10 +235,62 @@ object Storage {
      */
     fun open(ctx: Context, outDir: String?, name: String, mime: String = mimeFor(name)): StorageSink {
         val safeName = sanitizeFileName(name)
+        val custom = outDir?.takeIf { isCustomDir(it) }
         return when {
-            isCustomDir(outDir) -> openSaf(ctx, Uri.parse(outDir), safeName, mime)
-            Build.VERSION.SDK_INT >= 29 -> openMediaStore(ctx, safeName, mime)
-            else -> openLegacy(ctx, safeName, mime)
+            custom != null -> withReservedName(custom, safeName, null) { openSaf(ctx, Uri.parse(custom), it, mime) }
+            Build.VERSION.SDK_INT >= 29 ->
+                withReservedName(DEFAULT_DIR, safeName, { existsInDownloads(ctx, it) }) { openMediaStore(ctx, it, mime) }
+            else -> withReservedName("legacy", safeName, null) { openLegacy(ctx, it, mime) }
+        }
+    }
+
+    /** 目录里是不是已经有叫这个名字的文件 */
+    private fun existsInDownloads(ctx: Context, name: String): Boolean = runCatching {
+        ctx.contentResolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.Downloads.RELATIVE_PATH}=? AND ${MediaStore.Downloads.DISPLAY_NAME}=?",
+            arrayOf("$DEFAULT_DIR/", name),
+            null,
+        )?.use { it.moveToFirst() } ?: false
+    }.getOrDefault(false)
+
+    /**
+     * 正在写入的文件（「目录/文件名」）。
+     *
+     * 系统只在文件「发布」的那一刻才给重名文件加序号。发布之前，两个同名的待写入文件在系统眼里是同一个文件：
+     * 同时下几个任务、文件名又一样时（比如几个没写标题的视频在同一秒开始），两路数据会写进同一个文件，
+     * 其中一个任务的结果就被另一个覆盖掉了。所以打开之前先在这里登记占位：
+     * 同一个目录里已经有同名文件正在写，就依次用「名字 (1)」「名字 (2)」……写完（或失败）后撤销登记。
+     * @param exists 目录里已有同名文件时返回 true（用来跳过已经下好的文件，免得系统再叠一层序号）；null = 不查
+     */
+    private val writing = HashSet<String>()
+
+    private fun withReservedName(
+        dir: String,
+        name: String,
+        exists: ((String) -> Boolean)?,
+        block: (String) -> StorageSink,
+    ): StorageSink {
+        val dot = name.lastIndexOf('.')
+        val stem = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
+        val reserved: String
+        val release: () -> Unit
+        synchronized(writing) {
+            var candidate = name
+            var n = 0
+            while ("$dir/$candidate" in writing || exists?.invoke(candidate) == true) candidate = "$stem (${++n})$ext"
+            val key = "$dir/$candidate"
+            writing.add(key)
+            reserved = candidate
+            release = { synchronized(writing) { writing.remove(key) } } // 重复撤销是空操作
+        }
+        try {
+            return block(reserved).also { it.onClosed = release }
+        } catch (e: Throwable) {
+            release()
+            throw e
         }
     }
 
@@ -290,7 +351,7 @@ object Storage {
     }
 
     /** 目录/文件的显示名（如“Movies”）；查询失败返回 null */
-    private fun displayNameOf(resolver: ContentResolver, uri: Uri): String? = runCatching {
+    fun displayNameOf(resolver: ContentResolver, uri: Uri): String? = runCatching {
         resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0)?.takeIf { it.isNotBlank() } else null
         }

@@ -166,11 +166,12 @@ object HlsPlaylist {
     }
 
     /** 128 位的 IV：给了就用给的，没给就用分段所在的媒体序号 */
-    fun iv(key: Key, mediaSequence: Long, index: Int): ByteArray {
+    fun ivAt(key: Key, sequence: Long): ByteArray {
         key.iv?.let { if (it.size == 16) return it }
-        val seq = mediaSequence + index
-        return ByteArray(16).also { for (i in 0 until 8) it[15 - i] = (seq ushr (8 * i)).toByte() }
+        return ByteArray(16).also { for (i in 0 until 8) it[15 - i] = (sequence ushr (8 * i)).toByte() }
     }
+
+    fun iv(key: Key, mediaSequence: Long, index: Int): ByteArray = ivAt(key, mediaSequence + index)
 
     private fun hex(s: String): ByteArray? {
         if (s.length != 32) return null

@@ -54,6 +54,8 @@ export const api = {
   saveProxy: (proxy) => post('/api/config', { proxy }),
   saveSessdata: (bilibiliSessdata) => post('/api/config', { bilibiliSessdata }),
   saveHlsSites: (hlsSites) => post('/api/config', { hlsSites }),
+  // 同时下载的任务数（桌面端和安卓端都支持，立即生效）
+  saveMaxParallel: (maxParallel) => post('/api/config', { maxParallel }),
   getConfig: () => get('/api/config'),
   getTasks: () => get('/api/tasks'),
   fsList: (dir) => get('/api/fs/list' + (dir ? '?dir=' + encodeURIComponent(dir) : '')),

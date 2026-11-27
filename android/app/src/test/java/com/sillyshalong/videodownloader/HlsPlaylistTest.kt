@@ -270,6 +270,31 @@ class HlsPlaylistTest {
         assertEquals(listOf(0x1FFFFFFFFL, 0x1FFFFFFFFL - 1), injectedPts)
     }
 
+    @Test
+    fun `TS 超过 2GiB：收尾时读文件开头，文件长度不能按 Int 算`() {
+        // 曾经的 bug：file.length().toInt() 在超过 2GiB 时是负数（3.63GiB → -400254016），
+        // 长视频下完（80%）开始合成时在这里直接 NegativeArraySizeException
+        val len = 3_894_713_280L // 188 的整数倍，正好是用户遇到的那个文件大小
+        val head = tsFile(pes = 3)
+        val f = File.createTempFile("vd-big-", ".ts")
+        try {
+            RandomAccessFile(f, "rw").use {
+                it.setLength(len) // 稀疏文件：只在开头写真实内容，并不真的占 3.6GiB 磁盘
+                it.seek(0)
+                it.write(head)
+            }
+            assertEquals(len, f.length())
+            val appended = TsTail.appendNextFrame(f, ByteArray(300) { 0x55 })
+            assertTrue(appended > 0)
+            assertEquals(len + appended, f.length())
+            // 开头原有的内容没被动过
+            val first = RandomAccessFile(f, "r").use { r -> ByteArray(head.size).also { r.readFully(it) } }
+            assertArrayEquals(head, first)
+        } finally {
+            f.delete()
+        }
+    }
+
     /* ---------------- 测试数据 ---------------- */
 
     private fun hex(s: String) = ByteArray(s.length / 2) { s.substring(it * 2, it * 2 + 2).toInt(16).toByte() }

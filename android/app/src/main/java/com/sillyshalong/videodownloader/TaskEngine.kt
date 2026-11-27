@@ -108,7 +108,9 @@ class Task(
 
 /**
  * 任务引擎：队列 + 各站点取流 + 落盘 + 历史持久化 + SSE 广播。
- * 任务顺序执行（同一时间只跑一个），与桌面端行为一致。
+ *
+ * 同时跑多个任务（上限见 [maxParallel]，默认 3 个）：每个工作线程从队列里领一个任务各下各的，互不阻塞。
+ * 任务对象里的字段只在它自己的锁内读写，所以多条任务并行是安全的。
  */
 class TaskEngine(ctx: Context) {
     private val app = ctx.applicationContext
@@ -119,9 +121,11 @@ class TaskEngine(ctx: Context) {
     private val clients = ConcurrentLinkedQueue<Client>()
     private val lock = Any()
 
-    @Volatile private var worker: Thread? = null
-    @Volatile private var current: Task? = null
-    @Volatile private var currentFlag: CancelFlag? = null
+    /** 正在下载的任务 → 它的取消开关（暂停 / 终止时用） */
+    private val running = ConcurrentHashMap<String, CancelFlag>()
+
+    /** 活着的工作线程数（只在 [lock] 内读写） */
+    private var liveWorkers = 0
 
     /** SSE 客户端：每人一个有界队列，写不进去（对端假死）就丢弃该连接 */
     private class Client(val queue: LinkedBlockingQueue<ByteArray>) {
@@ -158,6 +162,20 @@ class TaskEngine(ctx: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "读取历史失败", e)
         }
+        cleanOrphanParts()
+    }
+
+    /**
+     * 清掉没人认领的缓存：失败 / 暂停的任务会留着已下载的部分等着续传，任务一旦被删掉、
+     * 或者从历史里被挤出去，这些缓存就再也不会被用到。
+     */
+    private fun cleanOrphanParts() {
+        val keep = HashSet<String>()
+        for (t in tasks.values) synchronized(t) {
+            if (t.status == "paused" || t.status == "error" || t.status == "queued") keep.add(t.id)
+        }
+        val root = File(app.cacheDir, "parts")
+        root.listFiles()?.forEach { if (it.isDirectory && it.name !in keep) it.deleteRecursively() }
     }
 
     /* ================= 配置 ================= */
@@ -167,6 +185,7 @@ class TaskEngine(ctx: Context) {
         put("bilibiliSessdata", sessdata())
         put("hlsSites", JSONArray(hlsSites()))
         put("platform", "android")
+        put("maxParallel", maxParallel())
         put("outDir", prefs.getString(KEY_OUTDIR, null) ?: JSONObject.NULL)
         put(
             "outDirLabel",
@@ -175,6 +194,10 @@ class TaskEngine(ctx: Context) {
     }
 
     fun saveConfig(body: JSONObject): JSONObject {
+        if (body.has("maxParallel")) {
+            prefs.edit().putInt(KEY_PARALLEL, body.optInt("maxParallel", DEFAULT_PARALLEL).coerceIn(1, MAX_PARALLEL)).apply()
+            kick() // 调大了就可以多领任务
+        }
         if (body.has("proxy")) {
             val v = (body.nullableString("proxy") ?: "").trim()
             try {
@@ -198,7 +221,11 @@ class TaskEngine(ctx: Context) {
                 ?: (body.nullableString("hlsSites") ?: "").split(Regex("[\\n,;]+"))
             prefs.edit().putString(KEY_HLS, JSONArray(normalizeHlsSites(input)).toString()).apply()
         }
-        return JSONObject().put("ok", true).put("proxy", proxy()).put("bilibiliSessdata", sessdata()).put("hlsSites", JSONArray(hlsSites()))
+        return JSONObject().put("ok", true)
+            .put("proxy", proxy())
+            .put("bilibiliSessdata", sessdata())
+            .put("hlsSites", JSONArray(hlsSites()))
+            .put("maxParallel", maxParallel())
     }
 
     fun saveOutDir(tree: Uri) {
@@ -208,6 +235,9 @@ class TaskEngine(ctx: Context) {
     private fun proxy(): String = prefs.getString(KEY_PROXY, "") ?: ""
 
     private fun sessdata(): String = prefs.getString(KEY_SESSDATA, "") ?: ""
+
+    /** 同时下载的任务数 */
+    private fun maxParallel(): Int = prefs.getInt(KEY_PARALLEL, DEFAULT_PARALLEL).coerceIn(1, MAX_PARALLEL)
 
     private fun hlsSites(): List<String> = try {
         val arr = JSONArray(prefs.getString(KEY_HLS, "[]") ?: "[]")
@@ -321,11 +351,12 @@ class TaskEngine(ctx: Context) {
         val t = tasks[id] ?: throw ApiError(NanoHTTPD.Response.Status.NOT_FOUND, "任务不存在")
         synchronized(t) {
             if (t.status == "running" || t.status == "queued") throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "任务进行中，无法重试")
-            val resumed = t.status == "paused"
+            // 失败的任务如果留着已下载的部分，这次是从断点接着下，而不是从头
+            val resumed = t.status == "paused" || (t.status == "error" && hasPartialData(t))
             t.update {
                 status = "queued"
                 percent = 0.0
-                stage = if (resumed) "恢复中…" else "排队中"
+                stage = if (resumed) "继续中…" else "排队中"
                 error = null
                 file = null
                 fileUri = null
@@ -338,7 +369,7 @@ class TaskEngine(ctx: Context) {
                 createdAt = System.currentTimeMillis()
                 intent = null
                 log.clear()
-                log.add(if (resumed) "↻ 恢复下载" else "↻ 重新下载")
+                log.add(if (resumed) "↻ 从断点继续下载" else "↻ 重新下载")
             }
         }
         queue.add(id)
@@ -365,9 +396,9 @@ class TaskEngine(ctx: Context) {
                     flag = null
                 }
                 "running" -> {
-                    if (current !== t) throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "任务不在下载中，无法$verb")
+                    val f = running[id] ?: throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "任务不在下载中，无法$verb")
                     t.intent = wanted
-                    flag = currentFlag
+                    flag = f
                 }
                 else -> throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "任务不在下载中，无法$verb")
             }
@@ -383,6 +414,8 @@ class TaskEngine(ctx: Context) {
             if (t.status == "running" || t.status == "queued") throw ApiError(NanoHTTPD.Response.Status.BAD_REQUEST, "任务进行中，请先终止")
         }
         tasks.remove(id)
+        // 留着续传用的缓存也一并删掉
+        runCatching { partDir(t).deleteRecursively() }
         persist()
         broadcast(JSONObject().put("type", "delete").put("id", id))
         return JSONObject().put("ok", true)
@@ -512,10 +545,14 @@ class TaskEngine(ctx: Context) {
 
     /* ================= 执行 ================= */
 
+    /** 保证有足够的工作线程：最多 [maxParallel] 个，但也不为不存在的任务空转 */
     private fun kick() {
         synchronized(lock) {
-            val w = worker
-            if (w == null || !w.isAlive) worker = thread(name = "task-worker", isDaemon = true) { workLoop() }
+            val wanted = minOf(maxParallel(), liveWorkers + queue.size)
+            while (liveWorkers < wanted) {
+                liveWorkers++
+                thread(name = "task-worker", isDaemon = true) { workLoop() }
+            }
         }
     }
 
@@ -526,22 +563,22 @@ class TaskEngine(ctx: Context) {
                 synchronized(lock) {
                     // 再次确认：取空和退出之间可能有新任务入队
                     if (queue.isEmpty()) {
-                        worker = null
+                        liveWorkers--
                         return
                     }
                 }
                 continue
             }
-            val t = tasks[id] ?: continue
-            if (t.status != "queued") continue
+            val t = tasks[id]
+            // 入队之后被暂停 / 终止的任务还留在队列里，领到时跳过
+            if (t == null || !synchronized(t) { t.status == "queued" }) continue
             runOne(t)
         }
     }
 
     private fun runOne(t: Task) {
         val flag = CancelFlag()
-        current = t
-        currentFlag = flag
+        running[t.id] = flag
         t.update {
             status = "running"
             stage = "解析中"
@@ -573,26 +610,38 @@ class TaskEngine(ctx: Context) {
             if (wanted == "cancelled") partDir(t).deleteRecursively()
         } catch (e: Exception) {
             Log.e(TAG, "任务失败 ${t.url}", e)
-            partDir(t).deleteRecursively()
-            t.update {
-                status = "error"
-                stage = ""
-                speed = null
-                eta = null
-                error = friendly(e)
-                log.add("✖ $error")
-            }
+            fail(t, friendly(e))
         } catch (e: LinkageError) {
             // 系统组件在当前机型上缺失（如模拟器没有某类编解码器）
-            t.update { status = "error"; stage = ""; error = "当前系统缺少所需组件：${e.message}"; log.add("✖ $error") }
+            fail(t, "当前系统缺少所需组件：${e.message}")
         } finally {
             lastProgress.remove(t.id)
-            current = null
-            currentFlag = null
+            running.remove(t.id)
             persist()
             emit(t)
         }
     }
+
+    /**
+     * 任务失败。已下载的部分不删：点「重试」会从断点接着下
+     * （以前失败就把缓存清掉，网络抖一下就得从头再来）。
+     */
+    private fun fail(t: Task, message: String) {
+        val kept = hasPartialData(t)
+        t.update {
+            status = "error"
+            stage = ""
+            speed = null
+            eta = null
+            error = message
+            log.add("✖ $message")
+            if (kept) log.add("已下载的部分已保留，点「重试」会从这里继续")
+        }
+    }
+
+    /** 缓存目录里有没有已下载的数据（可以接着下的那种） */
+    private fun hasPartialData(t: Task): Boolean =
+        runCatching { partDir(t).walkTopDown().any { it.isFile && it.length() > 0 } }.getOrDefault(false)
 
     private fun runTask(t: Task, flag: CancelFlag) {
         when (t.site) {
@@ -606,7 +655,8 @@ class TaskEngine(ctx: Context) {
     private fun runBili(t: Task, flag: CancelFlag) {
         val spec = BiliEngine.extract(app, t.url, sessdata(), t.quality, flag)
         setTitle(t, spec.title)
-        saveDirect(t, spec, flag, 0.0, 1.0)
+        // 播放地址过期（HTTP 403）时重新取一次，从断点接着下
+        saveResumable(t, spec, flag) { BiliEngine.extract(app, t.url, sessdata(), t.quality, flag).also { setTitle(t, it.title) } }
     }
 
     private fun runYouTube(t: Task, flag: CancelFlag) = YouTubeFlow.run(this, t, flag)
@@ -624,6 +674,42 @@ class TaskEngine(ctx: Context) {
     /** 下载目录里新建目标文件 */
     internal fun openSink(t: Task, name: String, mime: String): StorageSink = Storage.open(app, t.outDir, name, mime)
 
+    /**
+     * 单文件、可续传地保存：先下到缓存（.part 断点续传 —— 暂停、失败、地址过期之后重试都从断点接着下），
+     * 下完再原样存进保存目标。
+     * 存储空间不够同时放两份（缓存 + 保存目标）时，退回到直接写进保存目标（这样就不能续传了）。
+     * @param refresh 下载地址失效时重新取一个（返回新的 [DownloadSpec]）；null = 不重新取
+     */
+    internal fun saveResumable(t: Task, spec: DownloadSpec, flag: CancelFlag, refresh: (() -> DownloadSpec)? = null) {
+        val dir = partDir(t)
+        if (!dir.isDirectory && !dir.mkdirs()) throw Http.ApiException("无法创建缓存目录（存储空间不足？）")
+        val roomForTwo = spec.totalBytes <= 0 || dir.usableSpace > spec.totalBytes * 2 + RESERVE_BYTES
+        if (!roomForTwo) {
+            log(t, "存储空间不够同时放缓存和目标文件，这个任务暂停后不能续传")
+            saveDirect(t, spec, flag, 0.0, 1.0)
+            return
+        }
+        val ext = spec.fileName.substringAfterLast('.', "")
+        val cached = File(dir, if (ext.isEmpty()) "data" else "data.$ext")
+        stage(t, "下载中")
+        try {
+            HttpDownloader.toFile(
+                spec,
+                cached,
+                flag,
+                progress(t, flag, 0.0, SAVE_TO),
+                onResumed = { bytes -> log(t, "从断点继续（已有 ${bytes / 1048576} MB）") },
+                onLog = { line -> log(t, line) },
+                refresh = refresh,
+            )
+            stage(t, "保存中")
+            saveCacheFile(t, cached, spec.fileName, spec.mime)
+        } finally {
+            cached.delete()
+            dir.delete() // 只有空目录才删得掉；留着续传用的 .part 时会原样保留
+        }
+    }
+
     /** 单文件直存：网络流 → 保存目标 */
     internal fun saveDirect(t: Task, spec: DownloadSpec, flag: CancelFlag, from: Double, to: Double) {
         val sink = openSink(t, spec.fileName, spec.mime)
@@ -639,6 +725,7 @@ class TaskEngine(ctx: Context) {
                 sizeBytes = size
                 fileUri = sink.fileUri.toString()
                 treeUri = sink.treeUri?.toString()
+                file = sink.displayPath
                 percent = to * 100
             }
         } finally {
@@ -664,11 +751,13 @@ class TaskEngine(ctx: Context) {
         }
     }
 
+    /** 文件已经完整写进保存目标。保存目录可能在发布时给文件改过名（重名时加 " (1)"），这里记的是最终的名字 */
     internal fun markSaved(t: Task, sink: StorageSink, size: Long, percent: Double) {
         t.update {
             sizeBytes = size
             fileUri = sink.fileUri.toString()
             treeUri = sink.treeUri?.toString()
+            file = sink.displayPath
             this.percent = percent
         }
     }
@@ -745,9 +834,20 @@ class TaskEngine(ctx: Context) {
         private const val KEY_PROXY = "proxy"
         private const val KEY_HLS = "hlsSites"
         private const val KEY_OUTDIR = "outDir"
+        private const val KEY_PARALLEL = "maxParallel"
         private const val MAX_RECORDS = 500
         private const val MAX_EPISODES = 50
         private const val KEEPALIVE_SEC = 15L
+
+        /** 同时下载的任务数：默认 3 个，设置里可调 */
+        const val DEFAULT_PARALLEL = 3
+        const val MAX_PARALLEL = 5
+
+        /** 下载占任务的 97%，剩下 3% 留给「从缓存存进保存目标」这一步 */
+        private const val SAVE_TO = 0.97
+
+        /** 判断「放不放得下两份」时多留的余量 */
+        private const val RESERVE_BYTES = 200L * 1024 * 1024
 
         /** 与桌面端 config.mjs 的 normalizeHlsSites 同规则：去 scheme / www / 路径，只留合法域名并去重 */
         fun normalizeHlsSites(input: List<String>): List<String> {

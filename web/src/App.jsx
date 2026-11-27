@@ -49,6 +49,9 @@ const QUALITY_OPTIONS = [
   { label: '360p', value: '360' },
 ];
 
+/** 设置里「同时下载任务数」的备选值 */
+const PARALLEL_CHOICES = [1, 2, 3, 5];
+
 const SITE_TAG_COLOR = {
   youtube: 'red',
   douyin: 'geekblue',
@@ -287,6 +290,7 @@ export default function App() {
   const [hlsSitesCount, setHlsSitesCount] = useState(0); // 已保存到 config.json 的数量
   const [proxyStatus, setProxyStatus] = useState(null); // {ok, text}
   const [serverAddr, setServerAddr] = useState(() => localStorage.getItem('vd.server') || '');
+  const [maxParallel, setMaxParallel] = useState(3); // 同时下载的任务数
 
   const [tasks, setTasks] = useState(() => new Map());
   const [stats, setStats] = useState(null);
@@ -335,6 +339,7 @@ export default function App() {
       const sites = c.hlsSites || [];
       setHlsInput(sites.join('\n'));
       setHlsSitesCount(sites.length);
+      setMaxParallel(Number(c.maxParallel) || 3);
       // 当前保存目录就是上次选过的目录时，带上它的显示名
       setOutdirLabel(c.outDir && c.outDir === localStorage.getItem('vd.outdir') ? c.outDirLabel || '' : '');
     }).catch(() => {});
@@ -554,6 +559,17 @@ export default function App() {
     () => [...tasks.values()].sort((a, b) => b.createdAt - a.createdAt),
     [tasks],
   );
+
+  /** 同时下载任务数改成 [n]（立即生效，不用点保存） */
+  const saveMaxParallel = async (n) => {
+    setMaxParallel(n);
+    try {
+      const r = await api.saveMaxParallel(n);
+      if (r?.error) message.error(r.error);
+    } catch (e) {
+      message.error(t('addTaskFailed', { v: e.message || '未知错误' }));
+    }
+  };
   // 详情抽屉实时任务：SSE 每次更新 tasks 后自动重取（日志/进度实时跟随）
   const detailTask = detailId ? tasks.get(detailId) ?? null : null;
   const audioOn = audio && !audioDisabled;
@@ -657,6 +673,16 @@ export default function App() {
               </span>
             </Flex>
             <Text type="secondary" className="note">{t('hlsNote')}</Text>
+
+            <Text type="secondary" className="tag-label" style={{ marginTop: 8 }}>{t('parallelTitle')}</Text>
+            <div id="parallel">
+              <Segmented
+                options={PARALLEL_CHOICES.map((n) => ({ label: t('parallelN', { n }), value: n }))}
+                value={maxParallel}
+                onChange={saveMaxParallel}
+              />
+            </div>
+            <Text type="secondary" className="note">{t('parallelNote')}</Text>
 
             <Text type="secondary" className="tag-label" style={{ marginTop: 8 }}>{t('language')}</Text>
             <Segmented
