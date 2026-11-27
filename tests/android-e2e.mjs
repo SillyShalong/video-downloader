@@ -848,11 +848,16 @@ test('download-yt: 真实输入 YouTube 链接 → 下载 → 合成的 MP4 与�
 test('pause-resume-yt: 下载中途点「暂停」→ 点「恢复」从断点继续并完成', async (h) => {
   const c = h.c;
   await resetUi(c);
+  // 这个用例验证的是「暂停后从断点继续」，和清晰度无关：选 360p 再下。最佳清晰度下这个视频有两百多 MB，
+  // 在模拟器的网速上要二十多分钟才下得完，网络稍差就会超时；360p 只有它的六分之一
+  await c.tap('#quality .ant-segmented-item:nth-of-type(5)');
+  await waitFor('清晰度选为 360p', () => c.evaluate(`document.querySelector('#quality .ant-segmented-item-selected')?.textContent.includes('360p')`), { timeout: 5000 });
   const since = deviceNow();
   const t = await submitAndCatch(c, { url: URLS.ytLong, timeout: 30000 });
 
-  // 等视频流下了一小段再暂停
-  const running = await waitTask(c, t.id, (x) => x.status === 'running' && x.percent >= 3, '下载进度 ≥ 3%', 120000);
+  // 等视频流下了几 MB 再暂停（太少的话「已有 N MB」里的 N 会是 0，看不出是从断点继续的）
+  const running = await waitTask(c, t.id, (x) => x.status === 'running' && x.percent >= 8, '下载进度 ≥ 8%', 120000);
+  assert.match(running.log.join('\n'), /视频流 itag \d+（360p/, `应按所选的 360p 下:\n${running.log.join('\n')}`);
   await c.tap('.trow [data-act="pause"]');
   const paused = await waitTask(c, t.id, (x) => x.status === 'paused', '任务变为暂停', 30000);
   await waitFor('界面首行显示「暂停」', () => rowStatusIs(c, 'paused'), { timeout: 5000 });
@@ -865,7 +870,7 @@ test('pause-resume-yt: 下载中途点「暂停」→ 点「恢复」从断点�
   // 恢复：从断点继续
   await c.tap('.trow [data-act="retry"]');
   await waitTask(c, t.id, (x) => x.status === 'running' || x.status === 'queued', '任务恢复运行', 30000);
-  const done = await waitTask(c, t.id, (x) => x.status === 'done', '恢复后下载完成', 900000);
+  const done = await waitTask(c, t.id, (x) => x.status === 'done', '恢复后下载完成', 1800000); // 模拟器到 YouTube 的网速时好时坏，给足余量
   await waitFor('界面首行变为完成', () => rowStatusIs(c, 'done'), { timeout: 10000 });
   const log = (done.log || []).join('\n');
   assert.match(log, /视频流从断点继续（已有 \d+ MB）/, `恢复时应接着上次的断点继续:\n${log}`);

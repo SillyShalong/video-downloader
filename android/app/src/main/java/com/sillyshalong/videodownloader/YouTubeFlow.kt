@@ -66,7 +66,8 @@ internal object YouTubeFlow {
         fun specOf(url: String, name: String, mime: String) = DownloadSpec(ex.title, name, url, mime = mime)
 
         fun resumed(label: String): (Long) -> Unit = { bytes ->
-            engine.log(t, if (label == "视频流") "$label 从断点继续（已有 ${bytes / 1024 / 1024} MB）" else "$label 从断点继续（已有 ${bytes / 1024} KB）")
+            // 「视频流从断点继续（已有 14 MB）」：和 B站的「从断点继续（已有 N MB）」是同一种写法
+            engine.log(t, if (label == "视频流") "${label}从断点继续（已有 ${bytes / 1024 / 1024} MB）" else "${label}从断点继续（已有 ${bytes / 1024} KB）")
         }
 
         engine.stage(t, "下载视频流（${ex.video!!.label}）")

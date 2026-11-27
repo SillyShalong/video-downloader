@@ -256,6 +256,27 @@ object Storage {
     }.getOrDefault(false)
 
     /**
+     * 下载开始之前先确认用户所选的保存目录还能用（目录可能已经被删掉，或者授权被收回）。
+     * 各个站点都是先下到应用缓存、最后才写进保存目录：不先查的话，要等整个视频下完、开始保存时才发现，
+     * 白等一趟。只读不写，不会在目录里留下任何东西。
+     * @throws StorageException 目录不可用（文案和保存时的报错一致）
+     */
+    fun checkDir(ctx: Context, outDir: String?) {
+        val custom = outDir?.takeIf { isCustomDir(it) } ?: return // 默认目录由系统管理，不用查
+        val resolver = ctx.contentResolver
+        val tree = Uri.parse(custom)
+        val doc = try {
+            DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+        } catch (e: Exception) {
+            throw StorageException("所选目录无效，请重新选择保存目录")
+        }
+        val exists = runCatching {
+            resolver.query(doc, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)?.use { it.moveToFirst() }
+        }.getOrNull() == true
+        if (!exists) throw StorageException("无法在所选目录创建文件（目录权限可能已失效，请重新选择保存目录）")
+    }
+
+    /**
      * 正在写入的文件（「目录/文件名」）。
      *
      * 系统只在文件「发布」的那一刻才给重名文件加序号。发布之前，两个同名的待写入文件在系统眼里是同一个文件：

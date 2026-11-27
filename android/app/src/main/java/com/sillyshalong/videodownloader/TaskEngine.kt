@@ -644,6 +644,10 @@ class TaskEngine(ctx: Context) {
         runCatching { partDir(t).walkTopDown().any { it.isFile && it.length() > 0 } }.getOrDefault(false)
 
     private fun runTask(t: Task, flag: CancelFlag) {
+        val supported = t.site == Sites.BILIBILI || t.site == Sites.YOUTUBE || t.site == Sites.HLS
+        // 各站点都是先下到应用缓存、最后才写进保存目录。开始下载之前先确认保存目录还能用：
+        // 目录被删了、或者授权被收回，现在就报错，而不是等整个视频下完、开始保存时才发现
+        if (supported) Storage.checkDir(app, t.outDir)
         when (t.site) {
             Sites.BILIBILI -> runBili(t, flag)
             Sites.YOUTUBE -> runYouTube(t, flag)
