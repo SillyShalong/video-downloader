@@ -2,7 +2,9 @@
 // 用 ffmpeg 而不是 ffprobe：项目里只随包带了 ffmpeg.exe，而且 ffmpeg 的解码器就是事实上的参考实现。
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,13 +52,50 @@ export function frameRows(file) {
 /** 解码后的 PCM 哈希 */
 export const audioMd5 = (file) => ff(['-v', 'error', '-i', file, '-map', '0:a:0', '-vn', '-f', 'md5', '-']).stdout.trim();
 
-/** 解码成原始 PCM（16 位有符号、交错）：{ channels, rate, samples, data } */
+/**
+ * 解码成原始 PCM（16 位有符号、交错）：{ channels, rate, samples, data }
+ * data 用起来像一段 Buffer（有 length、有 subarray），但内容在磁盘上的临时文件里：
+ * 一两个小时的视频解码出来有上 GB，放不进内存（Node 一个 Buffer 的上限是 2GiB，一个字符串的上限更小）。用完调 close() 删掉。
+ */
 export function audioPcm(file) {
-  const r = ff(['-v', 'error', '-i', file, '-map', '0:a:0', '-vn', '-f', 's16le', '-']);
+  mkdirSync(PCM_DIR, { recursive: true });
+  const pcm = path.join(PCM_DIR, `${process.pid}-${randomUUID()}.pcm`);
+  pcmTemp.add(pcm);
+  ff(['-v', 'error', '-y', '-i', file, '-map', '0:a:0', '-vn', '-f', 's16le', pcm]);
   const info = /\b(\d+) Hz, (?:\w+, )?(\d+) ch/.exec(probeText(file).replace(/\n/g, ' ')) || [];
   const channels = Number(info[2] || 2);
-  const data = r.stdout ? Buffer.from(r.stdout, 'binary') : Buffer.alloc(0);
+  const data = new PcmFile(pcm);
   return { rate: Number(info[1] || 0), channels, data, samples: data.length / (2 * channels) };
+}
+
+const PCM_DIR = path.join(tmpdir(), 'vd-pcm');
+/** 这个进程解出来的 PCM 临时文件：正常情况下比较完就删，断言抛异常没删成的，等进程退出时统一清理 */
+const pcmTemp = new Set();
+process.once('exit', () => {
+  for (const f of pcmTemp) rmSync(f, { force: true });
+});
+
+/** 磁盘上的一段字节：只提供 assertSameAudio 用到的 length 和 subarray */
+class PcmFile {
+  constructor(file) {
+    this.file = file;
+    this.fd = openSync(file, 'r');
+    this.length = fstatSync(this.fd).size;
+  }
+  subarray(start, end) {
+    const b = Buffer.alloc(Math.max(0, Math.min(end, this.length) - start));
+    readSync(this.fd, b, 0, b.length, start);
+    return b;
+  }
+  close() {
+    closeSync(this.fd);
+    try {
+      rmSync(this.file, { force: true });
+      pcmTemp.delete(this.file);
+    } catch {
+      /* 可能被别的程序（杀毒软件）占着：留给进程退出时清理 */
+    }
+  }
 }
 
 /**
@@ -67,21 +106,26 @@ export function audioPcm(file) {
 export function assertSameAudio(a, b, label, tolerance = 16) {
   const pa = audioPcm(a);
   const pb = audioPcm(b);
-  assert.equal(pa.channels, pb.channels, `${label}: 声道数不同`);
-  assert.equal(pa.rate, pb.rate, `${label}: 采样率不同`);
-  assert.ok(Math.abs(pa.samples - pb.samples) <= tolerance, `${label}: 音频长度相差太多（${pa.samples} vs ${pb.samples} 个采样）`);
-  // 只比较到两边都有、且是整帧的位置；最后那一帧不比（零头差异就在那里）
-  const frame = 1024 * 2 * pa.channels;
-  const comparable = Math.floor(Math.min(pa.data.length, pb.data.length) / frame - 1) * frame;
-  let at = -1;
-  for (let i = 0; i < comparable; i += 4096) {
-    if (!pa.data.subarray(i, Math.min(i + 4096, comparable)).equals(pb.data.subarray(i, Math.min(i + 4096, comparable)))) {
-      at = i;
-      break;
+  try {
+    assert.equal(pa.channels, pb.channels, `${label}: 声道数不同`);
+    assert.equal(pa.rate, pb.rate, `${label}: 采样率不同`);
+    assert.ok(Math.abs(pa.samples - pb.samples) <= tolerance, `${label}: 音频长度相差太多（${pa.samples} vs ${pb.samples} 个采样）`);
+    // 只比较到两边都有、且是整帧的位置；最后那一帧不比（零头差异就在那里）
+    const frame = 1024 * 2 * pa.channels;
+    const comparable = Math.floor(Math.min(pa.data.length, pb.data.length) / frame - 1) * frame;
+    let at = -1;
+    for (let i = 0; i < comparable; i += 4096) {
+      if (!pa.data.subarray(i, Math.min(i + 4096, comparable)).equals(pb.data.subarray(i, Math.min(i + 4096, comparable)))) {
+        at = i;
+        break;
+      }
     }
+    assert.equal(at, -1, `${label}: 音频内容不同（第一处差异在字节偏移 ${at}，约第 ${Math.floor(at / frame)} 帧）`);
+    return { samples: pa.samples, delta: pa.samples - pb.samples };
+  } finally {
+    pa.data.close();
+    pb.data.close();
   }
-  assert.equal(at, -1, `${label}: 音频内容不同（第一处差异在字节偏移 ${at}，约第 ${Math.floor(at / frame)} 帧）`);
-  return { samples: pa.samples, delta: pa.samples - pb.samples };
 }
 
 /**
@@ -113,34 +157,58 @@ export function assertSameVideo(a, b, label, maxReport = 3) {
  * 第一个视频轨的关键帧表（stss），返回关键帧的帧序号（从 0 起）。没有 stss 表示全是关键帧。
  * 直接读文件里的 box，不经过 ffmpeg：这一项比的就是「我们写进文件的关键帧标记」和「ffmpeg 写的」是否一样。
  * 分片文件（带 moof）的关键帧标记在各分片里，这里不解析，返回 null。
+ * 文件可能有 4GiB 以上（一个 Buffer 装不下）：所以只读顶层各个 box 的头部来找到 moov，再把 moov 单独读进来 ——
+ * 它里面只有索引表，再大也远不到 2GiB。
  */
 export function keyframeTable(file) {
-  const b = readFileSync(file);
+  const fd = openSync(file, 'r');
+  try {
+    return keyframeTableOf(fd, file);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function keyframeTableOf(fd, file) {
+  const size = fstatSync(fd).size;
+  const head = Buffer.alloc(16);
+  const top = [];
+  for (let p = 0; p + 8 <= size; ) {
+    readSync(fd, head, 0, 16, p);
+    let boxSize = head.readUInt32BE(0);
+    let headLen = 8;
+    if (boxSize === 1) { boxSize = Number(head.readBigUInt64BE(8)); headLen = 16; } else if (boxSize === 0) boxSize = size - p;
+    if (boxSize < 8) break;
+    top.push({ type: head.toString('latin1', 4, 8), payload: p + headLen, end: p + boxSize });
+    p += boxSize;
+  }
+  const moov = top.find((x) => x.type === 'moov');
+  assert.ok(moov, `${path.basename(file)}: 没有 moov`);
+  if (top.some((x) => x.type === 'moof')) return null;
+  const b = Buffer.alloc(moov.end - moov.payload);
+  readSync(fd, b, 0, b.length, moov.payload);
   const u32 = (p) => b.readUInt32BE(p);
   const u64 = (p) => Number(b.readBigUInt64BE(p));
   const children = (start, end) => {
     const out = [];
     for (let p = start; p + 8 <= end; ) {
-      let size = u32(p);
-      let head = 8;
-      if (size === 1) { size = u64(p + 8); head = 16; } else if (size === 0) size = end - p;
-      if (size < 8) break;
-      out.push({ type: b.toString('latin1', p + 4, p + 8), payload: p + head, end: p + size });
-      p += size;
+      let boxSize = u32(p);
+      let headLen = 8;
+      if (boxSize === 1) { boxSize = u64(p + 8); headLen = 16; } else if (boxSize === 0) boxSize = end - p;
+      if (boxSize < 8) break;
+      out.push({ type: b.toString('latin1', p + 4, p + 8), payload: p + headLen, end: p + boxSize });
+      p += boxSize;
     }
     return out;
   };
   const child = (boxes, type) => boxes.find((x) => x.type === type);
-  const top = children(0, b.length);
-  const moov = child(top, 'moov');
-  assert.ok(moov, `${path.basename(file)}: 没有 moov`);
-  if (top.some((x) => x.type === 'moof')) return null;
-  for (const trak of children(moov.payload, moov.end).filter((x) => x.type === 'trak')) {
+  for (const trak of children(0, b.length).filter((x) => x.type === 'trak')) {
     const mdia = child(children(trak.payload, trak.end), 'mdia');
     const hdlr = mdia && child(children(mdia.payload, mdia.end), 'hdlr');
     if (!hdlr || b.toString('latin1', hdlr.payload + 8, hdlr.payload + 12) !== 'vide') continue;
     const minf = child(children(mdia.payload, mdia.end), 'minf');
-    const stbl = child(children(minf.payload, minf.end), 'stbl');
+    const stbl = minf && child(children(minf.payload, minf.end), 'stbl');
+    assert.ok(stbl, `${path.basename(file)}: 视频轨没有 stbl`);
     const boxes = children(stbl.payload, stbl.end);
     const stsz = child(boxes, 'stsz');
     const count = u32(stsz.payload + 8);

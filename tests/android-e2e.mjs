@@ -35,7 +35,8 @@ const APP_LABEL = 'Video Downloader'; // 应用名（系统「无响应」提示
 const ACTIVITY = `${PKG}/.MainActivity`;
 const API_PORT = 18977; // 宿主端口 → 设备 8977
 const DEVTOOLS_PORT = 9333;
-const ARTIFACTS = process.env.VD_E2E_ARTIFACTS || path.join(tmpdir(), 'vd-e2e-artifacts');
+/** 截图 / 拉回来的文件等产物的存放目录（测试失败时留证据用） */
+export const ARTIFACTS = process.env.VD_E2E_ARTIFACTS || path.join(tmpdir(), 'vd-e2e-artifacts');
 const DEFAULT_DIR = '/sdcard/Download/VideoDownloader'; // App 的默认下载目录
 const PICK_FOLDER = 'VD_E2E'; // 「选择目录」用例使用的文件夹（第一次运行时在系统选择器里新建）
 const PICK_DIR = `/sdcard/Download/${PICK_FOLDER}`;
@@ -329,7 +330,13 @@ export async function connect() {
   /** 真实键盘输入（逐字符 key event），等价于软键盘打字 */
   const typeText = async (text) => adb(['shell', 'input', 'text', `'${text.replace(/'/g, "'\\''")}'`]);
 
-  return { send, evaluate, net, console: console_, screen, dpr, rectOf, rectByText, tap, tapText, taps, typeText, sseState, ws };
+  /**
+   * 经 DevTools 协议提交一段文字（等价于输入法「上屏」，不产生逐个按键事件）。
+   * 模拟器卡顿时 adb 的按键事件会丢字，连丢几次就改用它 —— 页面收到的 input 事件是一样的。
+   */
+  const insertText = async (text) => send('Input.insertText', { text });
+
+  return { send, evaluate, net, console: console_, screen, dpr, rectOf, rectByText, tap, tapText, taps, typeText, insertText, sseState, ws };
 }
 
 /* ---------------------------------------------------------- uiautomator -- */
@@ -428,13 +435,19 @@ async function typeInto(c, url) {
     await c.tap('#input');
     await sleep(400);
     await c.evaluate(`(() => { const ta = document.querySelector('#input'); ta.focus(); document.execCommand('selectAll'); })()`);
-    await c.typeText(url);
     // 系统一卡，adb 发的键盘事件会丢字（链接缺几个字符 → 站点报「链接无效」，看着像 App 的问题）。
-    // 所以读回输入框核对，不一致就全选重输。
+    // 所以前两次用真实按键，读回输入框核对，不一致就全选重输；还不行就改用输入法「上屏」的方式（不会丢字）。
+    if (attempt <= 2) {
+      await c.typeText(url);
+    } else {
+      if (attempt === 3) console.log('    （按键输入连续丢字符，改用输入法上屏的方式输入）');
+      await c.insertText(url);
+    }
     const typed = await c.evaluate(`document.querySelector('#input').value`);
     if (typed === url) break;
-    if (attempt >= 3) throw new Error(`输入链接后输入框内容不一致（应输入 ${url.length} 个字符，框里只有 ${typed.length} 个）: ${typed}`);
+    if (attempt >= 5) throw new Error(`输入链接后输入框内容不一致（应输入 ${url.length} 个字符，框里只有 ${typed.length} 个）: ${typed}`);
     console.log(`    （输入时丢了字符：${typed.length}/${url.length}，重输）`);
+    await sleep(300);
   }
   await waitFor('出现站点识别徽章', () => c.evaluate(`document.querySelectorAll('.detected .ant-tag').length > 0`), { timeout: 10000 });
 }
@@ -521,6 +534,17 @@ function pullNewest(deviceDir, fileBase, localName) {
   return { name, local, size: statSync(local).size };
 }
 
+/**
+ * 把设备上的这一个文件原样拉回来（[devicePath] 相对共享存储根，如 Download/VideoDownloader/xxx (1).mp4）。
+ * 同一分钟里下了多个任务时文件名只差一个 "(n)"，按名字前缀找最新会拿错 —— 这种情况必须按完整路径拉。
+ */
+function pullExact(devicePath, localName) {
+  mkdirSync(ARTIFACTS, { recursive: true });
+  const local = path.join(ARTIFACTS, localName);
+  adb(['pull', `/sdcard/${devicePath}`, local]);
+  return { name: path.basename(devicePath), local, size: statSync(local).size };
+}
+
 /** 设备上某目录里自 [sinceEpoch] 之后新写入的文件（应为空数组时说明没写到那里） */
 function filesNewerThan(deviceDir, sinceEpoch) {
   const out = adb(['shell', 'find', deviceDir, '-type', 'f', '-newermt', `@${Math.floor(sinceEpoch)}`], { allowFail: true });
@@ -558,7 +582,10 @@ const rowStatusIs = (c, status) => firstRow(c).then((r) => r && r.status === sta
 /** 把下载下来的文件做完整校验：确实落在 [dir]、大小与任务记录一致、能完整播放 */
 function checkDownloaded(done, dir, since, localName, label) {
   const fresh = filesNewerThan(dir, since - 1);
-  const pulled = pullNewest(dir, path.basename(done.file, path.extname(done.file)), localName);
+  // 任务记录里是完整路径时按原路径拉：同一分钟里下过的多个任务文件名只差一个 "(n)"，按前缀找最新会拿错
+  const prefix = dir.replace(/^\/sdcard\//, '') + '/';
+  const exact = done.file?.startsWith(prefix) ? pullExact(done.file, localName) : null;
+  const pulled = exact ?? pullNewest(dir, path.basename(done.file, path.extname(done.file)), localName);
   assert.ok(pulled && fresh.includes(`${dir}/${pulled.name}`), `${label}: 新文件应写入 ${dir}:\n  新文件: ${JSON.stringify(fresh)}`);
   assert.equal(pulled.size, done.sizeBytes, `${label}: 文件大小应与任务记录一致`);
   return { ...pulled, ...assertPlayable(pulled.local, { label }) };
@@ -1188,6 +1215,200 @@ test('restart-resume-hls: 下载途中应用被关闭 → 重新打开后任务�
   }
 });
 
+/* ------------------------------------------------- 续传 / 并行 / 设置（真实界面） -- */
+
+test('hls-expiring: 分段地址过期（HTTP 403）→ 刷新播放列表换新地址接着下，已下好的分段不重来', async (h) => {
+  const hls = h.hls;
+  const { done, file } = await downloadThroughUi(h, hls.url('expiring/index.m3u8'), 'hls-expiring.mp4', 'HLS 地址过期');
+  const log = (done.log || []).join('\n');
+  assert.match(log, /分段地址已过期（HTTP 403），已刷新播放列表，从第 3 段继续/, '日志应说明刷新了播放列表并接着下:\n' + log);
+  assert.ok(hls.expiring.rejected >= 1, '服务器应回过 403');
+  // 已经下好的分段没有被重复下载：每一段只成功下发了一次
+  const counts = {};
+  for (const s of hls.expiring.servedSegments) counts[s] = (counts[s] || 0) + 1;
+  assert.deepEqual(counts, { 'seg000.ts': 1, 'seg001.ts': 1, 'seg002.ts': 1, 'seg003.ts': 1 }, '各分段应各下载一次');
+  assertSameVideo(file.local, path.join(hls.ref, 'ts-plain.mp4'), 'HLS（地址过期后继续）vs ffmpeg 参考');
+  assertSameAudio(file.local, path.join(hls.ref, 'ts-plain.mp4'), 'HLS（地址过期后继续）：音频');
+  const av = assertAVSync(file.local, path.join(hls.ref, 'ts-plain.mp4'), 'HLS（地址过期后继续）：音画起点关系');
+  console.log(`    刷新了 ${hls.expiring.playlistFetches - 1} 次播放列表；音画起点：视频比音频${av.mine >= 0 ? '晚' : '早'} ${(Math.abs(av.mine) * 1000).toFixed(1)}ms`);
+});
+
+test('hls-fail-retry: 中途某一段一直 403 → 任务失败、已下载的分段保留 → 修好后点「重试」从断点继续并完成', async (h) => {
+  const c = h.c;
+  const hls = h.hls;
+  hls.flaky.broken = true;
+  hls.flaky.served.length = 0;
+  await resetUi(c);
+  try {
+    const t = await submitAndCatch(c, { url: hls.url('flaky/index.m3u8'), timeout: 30000 });
+    const failed = await waitTask(c, t.id, (x) => x.status === 'error', '分段一直被拒 → 任务失败', 120000);
+    assert.match(failed.error, /403/, '失败原因应提到 HTTP 403: ' + failed.error);
+    assert.match(failed.log.join('\n'), /已下载的部分已保留/, '应告诉用户重试会接着下:\n' + failed.log.join('\n'));
+    assert.match(partsListing(t.id), /stream\.ts/, '失败后应保留已下载的分段');
+    // 失败前已下好前两段
+    assert.deepEqual(hls.flaky.served, ['seg000.ts', 'seg001.ts']);
+    await waitFor('界面首行显示失败', () => rowStatusIs(c, 'error'), { timeout: 10000 });
+
+    // 服务器修好了 → 真实点击「重试」
+    hls.flaky.broken = false;
+    await c.tap('.trow [data-act="retry"]');
+    const done = await waitTask(c, t.id, (x) => x.status === 'done', '重试后下载完成', 180000);
+    assert.match(done.log.join('\n'), /分段从断点继续下载（已完成 2 段，共 4 段）/);
+    // 前两段没有重新下载：整个过程中每一段只成功下发了一次
+    assert.deepEqual(hls.flaky.served, ['seg000.ts', 'seg001.ts', 'seg002.ts', 'seg003.ts']);
+    assert.equal(partsListing(t.id).trim(), '', '完成后应清理缓存');
+    const file = checkDownloaded(done, DEFAULT_DIR, 0, 'hls-retried.mp4', 'HLS（失败后重试）');
+    assertSameVideo(file.local, path.join(hls.ref, 'ts-plain.mp4'), 'HLS（失败后重试）vs ffmpeg 参考');
+    assertAVSync(file.local, path.join(hls.ref, 'ts-plain.mp4'), 'HLS（失败后重试）：音画起点关系');
+    console.log(`    失败原因: ${failed.error}\n    文件: ${done.file} (${file.size} 字节)`);
+  } finally {
+    hls.flaky.broken = true;
+  }
+});
+
+/** 提交 [urls]，持续观察任务状态直到全部结束；返回 { tasks, maxRunning } */
+async function submitAndWait(h, urls, desc, timeout = 240000) {
+  const r = await api.post('/api/download', { input: urls.join('\n'), quality: null, audio: false, outDir: null, playlistItems: null });
+  assert.ok(Array.isArray(r.tasks), `${desc}: 提交失败: ${JSON.stringify(r)}`);
+  assert.equal(r.tasks.length, urls.length, `${desc}: 应创建 ${urls.length} 个任务`);
+  const ids = new Set(r.tasks.map((t) => t.id));
+  let maxRunning = 0;
+  let final = [];
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const mine = (await api.get('/api/tasks')).tasks.filter((x) => ids.has(x.id));
+    maxRunning = Math.max(maxRunning, mine.filter((x) => x.status === 'running').length);
+    if (mine.length === ids.size && mine.every((x) => x.status === 'done' || x.status === 'error')) {
+      final = mine;
+      break;
+    }
+    await sleep(120);
+  }
+  assert.equal(final.length, urls.length, `${desc}: 任务没能在 ${timeout / 1000}s 内结束`);
+  for (const t of final) assert.equal(t.status, 'done', `${desc}: 任务 ${t.url} 失败: ${t.error}\n${(t.log || []).join('\n')}`);
+  return { tasks: final, maxRunning };
+}
+
+test('parallel-tasks: 一次提交 4 个任务 → 默认 3 个同时下载（第 4 个排队），各自完成、文件正确', async (h) => {
+  const hls = h.hls;
+  hls.slowDown(600, '/'); // 每个请求都慢一点，保证任务之间确实重叠
+  try {
+    const { tasks, maxRunning } = await submitAndWait(
+      h,
+      [hls.url('ts-plain/index.m3u8'), hls.url('fmp4/index.m3u8'), hls.url('ts-aes/index.m3u8'), hls.url('expiring/index.m3u8')],
+      '并行下载',
+    );
+    assert.equal(maxRunning, 3, `最多应同时下载 3 个（默认值），实际观察到 ${maxRunning}`);
+    // 四个任务都出现在界面上，并且都是完成状态
+    await waitFor('界面上这 4 个任务都显示为完成', async () => {
+      const rows = await h.c.evaluate(`[...document.querySelectorAll('.trow')].map((r) => ({ status: [...r.classList].find((k) => k !== 'trow'), text: r.textContent }))`);
+      return tasks.every((t) => rows.some((r) => r.status === 'done' && [t.url, t.title, t.file].filter(Boolean).some((s) => r.text.includes(s))));
+    }, { timeout: 10000 });
+    const files = [];
+    for (const t of tasks) {
+      const local = `parallel-${t.id}.mp4`;
+      const ref = t.url.includes('/fmp4/') ? 'fmp4.mp4' : t.url.includes('/ts-aes/') ? 'ts-aes.mp4' : 'ts-plain.mp4';
+      const pulled = pullExact(t.file, local);
+      assert.ok(pulled, `并行下载的文件应落盘: ${t.file}`);
+      assert.equal(pulled.size, t.sizeBytes);
+      assertSameVideo(pulled.local, path.join(hls.ref, ref), `并行下载 ${new URL(t.url).pathname} vs ffmpeg 参考`);
+      files.push(`${new URL(t.url).pathname} → ${path.basename(t.file)}`);
+    }
+    console.log(`    同时下载的峰值: ${maxRunning} 个\n    ${files.join('\n    ')}`);
+  } finally {
+    hls.slowDown(0);
+  }
+});
+
+test('parallel-setting: 设置里把「同时下载任务数」调成 1 → 一个下完再下一个；再调回 3', async (h) => {
+  const c = h.c;
+  const hls = h.hls;
+  await resetUi(c);
+  assert.equal((await api.get('/api/config')).maxParallel, 3, '默认应同时下载 3 个');
+  await c.tap('#gear');
+  await waitFor('设置面板展开', () => c.evaluate(`document.querySelector('#settings').classList.contains('open')`), { timeout: 8000 });
+  await waitFor('设置里出现「同时下载任务数」', () => c.evaluate(`!!document.querySelector('#parallel .ant-segmented-item')`), { timeout: 5000 });
+  assert.match(await c.evaluate(`document.querySelector('#parallel').parentElement.textContent`), /同时下载任务数/);
+
+  // 真实点击「1 个」
+  await c.tap('#parallel .ant-segmented-item:nth-of-type(1)');
+  await waitFor('服务端收到 maxParallel=1', async () => (await api.get('/api/config')).maxParallel === 1, { timeout: 5000 });
+  hls.slowDown(700, '/');
+  try {
+    const { maxRunning } = await submitAndWait(h, [hls.url('ts-plain/index.m3u8'), hls.url('fmp4/index.m3u8')], '串行下载');
+    assert.equal(maxRunning, 1, `调成 1 之后不应同时下载两个，实际观察到 ${maxRunning}`);
+  } finally {
+    hls.slowDown(0);
+  }
+
+  // 真实点击「3 个」调回去
+  await c.tap('#parallel .ant-segmented-item:nth-of-type(3)');
+  await waitFor('服务端收到 maxParallel=3', async () => (await api.get('/api/config')).maxParallel === 3, { timeout: 5000 });
+  // 切到英文，控件文案跟着变
+  await c.tapText('English');
+  await waitFor('英文下显示 Downloads at once', () => c.evaluate(`document.querySelector('#parallel').parentElement.textContent.includes('Downloads at once')`), { timeout: 8000 });
+  await c.tapText('中文');
+  await waitFor('界面切回中文', () => c.evaluate(`document.querySelector('#parallel').parentElement.textContent.includes('同时下载任务数')`), { timeout: 8000 });
+});
+
+test('parallel-mixed: 两个 YouTube + 一个 HLS 同时下载，各自完成且内容正确', async (h) => {
+  const hls = h.hls;
+  const since = deviceNow();
+  const urls = [URLS.yt, process.env.VD_E2E_YT_ALT || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', hls.url('ts-plain/index.m3u8')];
+  const { tasks, maxRunning } = await submitAndWait(h, urls, '混合并行', 600000);
+  assert.equal(maxRunning, 3, `三个任务应同时下载，实际观察到 ${maxRunning}`);
+  for (const t of tasks) {
+    const local = `mixed-${t.id}.mp4`;
+    const pulled = pullExact(t.file, local);
+    assert.ok(pulled, `文件应落盘: ${t.file}`);
+    assert.equal(pulled.size, t.sizeBytes);
+    assert.equal(decodeErrors(pulled.local), '', `${t.site}: 整段解码不应有错误`);
+  }
+  console.log(`    同时下载的峰值: ${maxRunning} 个\n    ${tasks.map((t) => `${t.site}: ${t.file} (${t.sizeBytes} 字节)`).join('\n    ')}`);
+});
+
+test('pause-resume-bili: B站下载中途点「暂停」→ 点「恢复」从断点继续并完成', async (h) => {
+  const c = h.c;
+  await resetUi(c);
+  const since = deviceNow();
+  // 52MB 的视频在这个网络下要下一分多钟，中途有足够的时间暂停
+  const t = await submitAndCatch(c, { url: URLS.bili });
+  const running = await waitTask(c, t.id, (x) => x.status === 'running' && x.percent >= 10 && x.percent < 90, '下载进度在 10%–90% 之间', 180000);
+  assert.equal(running.stage, '下载中', '下载阶段界面应显示「下载中」');
+  await c.tap('.trow [data-act="pause"]');
+  const paused = await waitTask(c, t.id, (x) => x.status === 'paused', '任务变为暂停', 30000);
+  assert.ok(paused.downloaded > 0, '暂停时应已有进度');
+  assert.match(partsListing(t.id), /data\.mp4\.part/, `暂停后应保留断点文件:\n${partsListing(t.id)}`);
+  await c.tap('.trow [data-act="retry"]');
+  const done = await waitTask(c, t.id, (x) => x.status === 'done', '恢复后下载完成', 300000);
+  assert.match(done.log.join('\n'), /从断点继续（已有 \d+ MB）/, `恢复时应接着上次的断点继续:\n${done.log.join('\n')}`);
+  assert.equal(partsListing(t.id).trim(), '', '完成后应清理缓存');
+  const file = checkDownloaded(done, DEFAULT_DIR, since, 'bili-resumed.mp4', 'B站（恢复后）');
+  console.log(`    ${done.log.join('\n')}\n    文件: ${done.file} (${file.size} 字节)`);
+});
+
+test('download-yt-audio: 打开「仅音频」→ YouTube 保存为 m4a，内容是 AAC 音频', async (h) => {
+  const c = h.c;
+  await resetUi(c);
+  const since = deviceNow();
+  await typeInto(c, URLS.yt);
+  await c.tap('#audio');
+  await waitFor('「仅音频」开关已打开', () => c.evaluate(`document.querySelector('#audio').getAttribute('aria-checked') === 'true'`), { timeout: 5000 });
+  const before = await taskIds();
+  await c.tap('#btn');
+  const t = await waitNewTask(before, 30000);
+  const done = await waitTask(c, t.id, (x) => x.status === 'done', '仅音频任务完成', 300000);
+  assert.ok(done.file.endsWith('.m4a'), `仅音频应保存为 m4a: ${done.file}`);
+  const fresh = filesNewerThan(DEFAULT_DIR, since - 1);
+  const pulled = pullExact(done.file, 'yt-audio.m4a');
+  assert.ok(pulled && fresh.includes(`${DEFAULT_DIR}/${pulled.name}`), `新文件应写入 ${DEFAULT_DIR}:\n  新文件: ${JSON.stringify(fresh)}`);
+  assert.equal(pulled.size, done.sizeBytes, '文件大小应与任务记录一致');
+  const info = mediaInfo(pulled.local);
+  assert.match(info, /Audio: aac/, '应为 AAC 音频:\n' + info);
+  assert.doesNotMatch(info, /Video:/, '不应有视频流:\n' + info);
+  assert.equal(decodeErrors(pulled.local), '', '整段解码不应有错误');
+  console.log(`    文件: ${done.file} (${pulled.size} 字节) ${info.match(/Duration: [^,]+/)?.[0]}`);
+});
 /* ----------------------------------------------------------------- 主流程 -- */
 async function main() {
   if (argv.includes('--list')) {
@@ -1198,7 +1419,7 @@ async function main() {
   await startApp();
   const h = { c: await connect() };
   // HLS 相关用例需要电脑上的本地测试源（模拟器通过 10.0.2.2 访问）
-  if (selected.some((t) => t.name.includes('hls'))) h.hls = await startHlsServer();
+  if (selected.some((t) => t.name.includes('hls') || t.name.startsWith('parallel'))) h.hls = await startHlsServer();
 
   let failed = 0;
   const results = [];

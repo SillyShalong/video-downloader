@@ -114,25 +114,98 @@ export function prepareHlsFixtures() {
   return { root: ROOT, ref };
 }
 
-/** 启动 HTTP 服务。返回 { port, url(path), requests, close() } */
-export async function startHlsServer() {
-  const { root, ref } = prepareHlsFixtures();
-  /** App 发来的请求：{ method, path, headers } —— 用例里检查 Referer / Cookie 是否按预期带上 */
+/**
+ * 启动 HTTP 服务。返回 { port, url(path), requests, close() }
+ * @param {object} [opts]
+ * @param {string} [opts.root] 测试源目录。默认用 prepareHlsFixtures() 生成的那一套（依赖媒体校验留下的合成媒体）；
+ *   只需要 ts-plain/ 这一路的最小测试源可以自己生成后传进来（见 tests/hls-engine.test.mjs）
+ */
+export async function startHlsServer({ root: customRoot } = {}) {
+  const { root, ref } = customRoot ? { root: customRoot, ref: path.join(customRoot, 'ref') } : prepareHlsFixtures();
+  /** App 发来的请求：{ method, path, query, headers } —— 用例里检查 Referer / Cookie 是否按预期带上 */
   const requests = [];
   /** 测试可以调慢分段响应（毫秒），好让「下载中途暂停」有足够的时间窗口 */
   const throttle = { delay: 0, prefix: '' };
+
+  // ---- 两个「会出问题」的播放列表（媒体内容都是 ts-plain 那一路）----
+  /**
+   * 分段地址带有效期：每成功下发 [every] 个分段就换一次 token，之后拿着旧 token 来的请求一律 403，
+   * 重新读一遍播放列表才能拿到新 token。用来测「地址过期 → 刷新播放列表接着下」。
+   */
+  const expiring = { every: 2, token: 1, served: 0, playlistFetches: 0, servedSegments: [], rejected: 0 };
+  /** [segment] 这一段在 [broken] 为真时一直回 403。用来测「中途失败 → 修好 → 重试从断点继续」 */
+  const flaky = { broken: true, segment: 2, served: [], rejected: 0 };
+
+  /** 把 ts-plain 的播放列表里的分段地址换成 [map] 给出的地址 */
+  const remapPlaylist = (map) =>
+    readFileSync(path.join(root, 'ts-plain', 'index.m3u8'), 'utf8')
+      .split(/\r?\n/)
+      .map((line) => (line && !line.startsWith('#') ? map(line) : line))
+      .join('\n');
+  const sendFile = (res, file, extraHeaders = {}) => {
+    const body = readFileSync(file);
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+      'Content-Length': body.length,
+      'Cache-Control': 'no-store',
+      ...extraHeaders,
+    });
+    res.end(body);
+  };
+
   const server = http.createServer((req, res) => {
-    const pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    requests.push({ method: req.method, path: pathname, headers: req.headers });
+    const u = new URL(req.url, 'http://x');
+    const pathname = decodeURIComponent(u.pathname);
+    requests.push({ method: req.method, path: pathname, query: u.search, headers: req.headers });
+
+    // 分段地址过期
+    if (pathname === '/expiring/index.m3u8') {
+      expiring.playlistFetches++;
+      res.writeHead(200, { 'Content-Type': MIME['.m3u8'], 'Cache-Control': 'no-store' });
+      res.end(remapPlaylist((name) => `/expiring/${name}?tok=${expiring.token}`));
+      return;
+    }
+    const exp = /^\/expiring\/(seg\d+\.ts)$/.exec(pathname);
+    if (exp) {
+      if (u.searchParams.get('tok') !== String(expiring.token)) {
+        expiring.rejected++;
+        res.writeHead(403, { 'Content-Type': 'text/plain' }).end('token expired');
+        return;
+      }
+      expiring.servedSegments.push(exp[1]);
+      if (++expiring.served >= expiring.every) {
+        expiring.token++;
+        expiring.served = 0;
+      }
+      sendFile(res, path.join(root, 'ts-plain', exp[1]));
+      return;
+    }
+
+    // 中途某一段一直 403
+    if (pathname === '/flaky/index.m3u8') {
+      res.writeHead(200, { 'Content-Type': MIME['.m3u8'], 'Cache-Control': 'no-store' });
+      res.end(remapPlaylist((name) => `/flaky/${name}`));
+      return;
+    }
+    const fl = /^\/flaky\/(seg\d+\.ts)$/.exec(pathname);
+    if (fl) {
+      if (flaky.broken && fl[1] === `seg${String(flaky.segment).padStart(3, '0')}.ts`) {
+        flaky.rejected++;
+        res.writeHead(403, { 'Content-Type': 'text/plain' }).end('forbidden (simulated)');
+        return;
+      }
+      flaky.served.push(fl[1]);
+      sendFile(res, path.join(root, 'ts-plain', fl[1]));
+      return;
+    }
+
     const respond = () => {
       const file = path.join(root, path.normalize(pathname));
       if (!file.startsWith(root) || !isFile(file)) {
         res.writeHead(404).end('not found');
         return;
       }
-      const body = readFileSync(file);
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
-      res.end(body);
+      sendFile(res, file);
     };
     // 请求进来就记一笔（哪怕还没开始响应），用例据此知道 App 已经开始取哪一段
     if (throttle.delay > 0 && pathname.startsWith(throttle.prefix || '/')) setTimeout(respond, throttle.delay);
@@ -144,6 +217,8 @@ export async function startHlsServer() {
     port,
     ref,
     requests,
+    expiring,
+    flaky,
     /** 让某个前缀下的请求每条延迟 [ms] 毫秒再响应（prefix 为空 = 全部） */
     slowDown: (ms, prefix = '') => {
       throttle.delay = ms;
