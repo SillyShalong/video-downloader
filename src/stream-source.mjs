@@ -92,8 +92,7 @@ export function streamsFromUrls(urls) {
 export async function annotateIps(streams, { proxy } = {}) {
   const out = streams.map((s) => ({ ...s, links: s.links.map((l) => ({ ...l, ips: [] })) }));
   if (proxy) {
-    const u = parseUrl(proxy);
-    const px = { display: u ? `${u.protocol}//${u.host}` : String(proxy), hostname: u?.hostname ?? null, ips: [] };
+    const px = describeProxy(proxy);
     px.ips = (await resolveIps(px.hostname)) ?? [];
     return { streams: out, proxy: px };
   }
@@ -112,7 +111,7 @@ export function emitSource(onEvent, streams, { proxy, id } = {}) {
   const usable = streams?.filter((s) => s.links.length > 0) ?? [];
   if (!onEvent || usable.length === 0) return;
   const sourceId = id ?? Symbol();
-  onEvent({ type: 'source', sourceId, streams: usable, proxy: proxy ? { display: redact(proxy), hostname: parseUrl(proxy)?.hostname ?? null, ips: [] } : null });
+  onEvent({ type: 'source', sourceId, streams: usable, proxy: proxy ? describeProxy(proxy) : null });
   annotateIps(usable, { proxy })
     .then((r) => onEvent({ type: 'source', sourceId, ...r }))
     .catch(() => {});
@@ -190,10 +189,15 @@ function hostOf(u) {
   return parseUrl(u)?.host ?? null;
 }
 
-/** 代理地址只留协议和主机端口，账号密码不外传 */
-function redact(proxy) {
+/** 代理地址给用户看的写法：只留协议和主机端口，账号密码不外传 */
+export function proxyDisplay(proxy) {
   const u = parseUrl(proxy);
   return u ? `${u.protocol}//${u.host}` : String(proxy);
+}
+
+/** 代理的基本信息（显示用的地址 + 主机名）；IP 另行解析后填入 */
+function describeProxy(proxy) {
+  return { display: proxyDisplay(proxy), hostname: parseUrl(proxy)?.hostname ?? null, ips: [] };
 }
 
 function fmtIps(ips) {

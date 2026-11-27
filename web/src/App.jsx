@@ -74,9 +74,35 @@ const STATUS_ICON = {
 const STATUS_TEXT_KEY = { queued: 'stQueued', running: 'stRunning', done: 'stDone', error: 'stError', paused: 'stPaused', cancelled: 'stCancelled' };
 const stText = (s) => t(STATUS_TEXT_KEY[s] || s);
 
+/* ---- 线路标记：这次下载的数据是走设置里的代理，还是直连 ---- */
+const ROUTE_NOTE = { domestic: 'routeDirectDomestic', browser: 'routeDirectBrowser', none: 'routeDirectNone' };
+const isProxyRoute = (route) => route?.via === 'proxy';
+
+/** 一句话说明：走的是哪个代理，或者为什么直连。[proxyConfigured]：设置里现在有没有配代理 */
+function routeNote(route, proxyConfigured) {
+  if (!route) return '';
+  if (!proxyConfigured) return t('routeDirectNone');
+  return isProxyRoute(route) ? t('routeProxyLine', { v: route.proxy }) : t(ROUTE_NOTE[route.reason] ?? 'routeDirectNone');
+}
+
+/**
+ * 「走代理 / 直连」小标签。设了代理却直连的（比如 HLS 站点）用醒目的颜色：
+ * 用户容易以为所有下载都走了代理，这种情况最需要被看见。
+ */
+function RouteChip({ route, proxyConfigured }) {
+  if (!route) return null;
+  const viaProxy = isProxyRoute(route);
+  const bypass = !viaProxy && proxyConfigured;
+  return (
+    <span className={`chip route ${viaProxy ? 'proxy' : bypass ? 'bypass' : 'direct'}`} title={routeNote(route, proxyConfigured)}>
+      {viaProxy ? t('routeProxy') : t('routeDirect')}
+    </span>
+  );
+}
+
 /* ---- 紧凑任务行（主信息行 + 运行中带完整进度条，点击开详情抽屉） ---- */
 const TaskRow = memo(
-  function TaskRow({ task, onDetail, onPause, onCancel, onRetry, onDelete }) {
+  function TaskRow({ task, showRoute, onDetail, onPause, onCancel, onRetry, onDelete }) {
     const pct = Math.min(100, Math.max(0, task.percent || 0));
     const isRunning = task.status === 'running';
     // 运行中始终显示百分比（含 0%），完成后 100%，其他状态按需
@@ -91,6 +117,8 @@ const TaskRow = memo(
           <span className="t-title" title={task.title || task.url}>{task.title || midTrunc(task.url, 40, 20)}</span>
           <span className="chip sm">{SITE_LABEL[task.site] || task.site}</span>
           {qLabel && <span className="chip sm q">{qLabel}</span>}
+          {/* 设了代理才标：没设代理时所有下载都是直连，不用每行都写一遍 */}
+          {showRoute && <RouteChip route={task.route} proxyConfigured />}
           {isRunning && task.speed > 0 && <span className="t-speed">{fmtSpeed(task.speed)}</span>}
           {task.sizeBytes > 0 && !isRunning && <span className="t-size">{fmtBytes(task.sizeBytes)}</span>}
           {isRunning && task.downloaded > 0 && <span className="t-size">{fmtBytes(task.downloaded)}</span>}
@@ -125,9 +153,11 @@ const TaskRow = memo(
   },
   (a, b) => {
     const x = a.task, y = b.task;
-    return x === y || (x.id === y.id && x.status === y.status && x.percent === y.percent &&
+    return (x === y || (x.id === y.id && x.status === y.status && x.percent === y.percent &&
       x.title === y.title && x.file === y.file && x.error === y.error &&
-      x.speed === y.speed && x.downloaded === y.downloaded && x.sizeBytes === y.sizeBytes);
+      x.speed === y.speed && x.downloaded === y.downloaded && x.sizeBytes === y.sizeBytes &&
+      x.route?.via === y.route?.via && x.route?.reason === y.route?.reason && x.route?.proxy === y.route?.proxy)) &&
+      a.showRoute === b.showRoute;
   },
 );
 
@@ -147,12 +177,30 @@ function IpList({ ips }) {
   );
 }
 
-function StreamSources({ sources, proxy }) {
+/**
+ * route：任务开始时就定下来的线路（走代理 / 直连 + 原因），一开始运行就有。
+ * proxy：来源事件带来的代理信息（含本机解析出的 IP），要等 yt-dlp 把格式打出来才有。
+ * sources：每一路的域名 / IP。
+ */
+function StreamSources({ route, sources = [], proxy, proxyConfigured }) {
+  const viaProxy = route ? isProxyRoute(route) : !!proxy;
   return (
     <div id="stream-source">
       <Text type="secondary" className="tag-label">{t('streamSource')}</Text>
       <div className="src-list">
-        {proxy && (
+        {route ? (
+          <div className="src-stream src-route" id="stream-route">
+            <div className="src-head">
+              <Tag bordered color={viaProxy ? 'processing' : proxyConfigured ? 'warning' : 'default'}>
+                {viaProxy ? t('routeProxy') : t('routeDirect')}
+              </Tag>
+              {viaProxy && route.proxy && <Text code>{route.proxy}</Text>}
+              {viaProxy && proxy && <IpList ips={proxy.ips} />}
+            </div>
+            <div className="src-note">{routeNote(route, proxyConfigured)}</div>
+          </div>
+        ) : proxy ? (
+          // 合并之前的老记录：没有线路信息，只有来源事件里带的代理
           <div className="src-stream">
             <div className="src-host">
               <span className="src-kind">{t('streamViaProxy')}</span>
@@ -161,7 +209,7 @@ function StreamSources({ sources, proxy }) {
             </div>
             <div className="src-note">{t('streamProxyNote')}</div>
           </div>
-        )}
+        ) : null}
         {sources.map((s, i) => (
           <div className="src-stream" key={i}>
             <div className="src-head">
@@ -174,7 +222,7 @@ function StreamSources({ sources, proxy }) {
                 <div className="src-host">
                   <span className="src-kind">{t(STREAM_KIND[l.kind] ?? 'streamKindUrl')}</span>
                   <Text code>{l.host || '—'}</Text>
-                  {!proxy && <IpList ips={l.ips} />}
+                  {!viaProxy && <IpList ips={l.ips} />}
                 </div>
                 <Typography.Paragraph className="src-url" copyable={{ text: l.url }} ellipsis={{ rows: 1 }} style={{ margin: 0 }}>
                   {l.url}
@@ -183,14 +231,15 @@ function StreamSources({ sources, proxy }) {
             ))}
           </div>
         ))}
+        {sources.length === 0 && <div className="src-note">{t('streamPending')}</div>}
       </div>
-      {!proxy && <div className="src-note">{t('streamIpNote')}</div>}
+      {!viaProxy && sources.length > 0 && <div className="src-note">{t('streamIpNote')}</div>}
     </div>
   );
 }
 
 /* ---- 详情抽屉 ---- */
-function DetailDrawer({ task, onClose, onRetry, onOpen, onReveal, onDelete }) {
+function DetailDrawer({ task, proxyConfigured, onClose, onRetry, onOpen, onReveal, onDelete }) {
   if (!task) return null;
   const pct = task.percent > 0 ? Math.min(100, task.percent) : 0;
   const qLabel = task.audio ? 'MP3' : task.quality ? task.quality + 'P' : '最佳';
@@ -204,6 +253,7 @@ function DetailDrawer({ task, onClose, onRetry, onOpen, onReveal, onDelete }) {
           </Tag>
           <span className="chip">{SITE_LABEL[task.site] || task.site}</span>
           <span className="chip q">{qLabel}</span>
+          <RouteChip route={task.route} proxyConfigured />
           {task.sizeBytes > 0 && <Text type="secondary">{fmtBytes(task.sizeBytes)}</Text>}
         </Flex>
 
@@ -241,7 +291,9 @@ function DetailDrawer({ task, onClose, onRetry, onOpen, onReveal, onDelete }) {
           </div>
         )}
 
-        {task.sources?.length > 0 && <StreamSources sources={task.sources} proxy={task.sourceProxy} />}
+        {(task.route || task.sources?.length > 0) && (
+          <StreamSources route={task.route} sources={task.sources ?? []} proxy={task.sourceProxy} proxyConfigured={proxyConfigured} />
+        )}
 
         {task.log?.length > 0 && (
           <div>
@@ -285,6 +337,7 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [proxyInput, setProxyInput] = useState('');
+  const [proxyConfigured, setProxyConfigured] = useState(false); // 设置里当前有没有保存代理（决定任务行要不要标「走代理 / 直连」）
   const [sessdataInput, setSessdataInput] = useState('');
   const [hlsInput, setHlsInput] = useState(''); // 编辑中的 HLS 站点文本（每行一个域名）
   const [hlsSitesCount, setHlsSitesCount] = useState(0); // 已保存到 config.json 的数量
@@ -335,6 +388,7 @@ export default function App() {
     api.getConfig().then((c) => {
       setPlatform(c.platform || 'desktop');
       setProxyInput(c.proxy || '');
+      setProxyConfigured(!!c.proxy);
       setSessdataInput(c.bilibiliSessdata || '');
       const sites = c.hlsSites || [];
       setHlsInput(sites.join('\n'));
@@ -537,7 +591,10 @@ export default function App() {
   const saveProxy = async () => {
     const r = await api.saveProxy(proxyInput.trim()).catch(() => null);
     if (r?.error) message.error(r.error);
-    else message.success(proxyInput.trim() ? `代理已保存：${proxyInput.trim()}` : '已清除代理配置');
+    else {
+      setProxyConfigured(!!proxyInput.trim());
+      message.success(proxyInput.trim() ? `代理已保存：${proxyInput.trim()}` : '已清除代理配置');
+    }
   };
   const saveSessdata = async () => {
     const r = await api.saveSessdata(sessdataInput.trim()).catch(() => null);
@@ -818,7 +875,7 @@ export default function App() {
       ) : (
         <div className="tlist">
           {taskList.map((t) => (
-            <TaskRow key={t.id} task={t} onDetail={(row) => setDetailId(row.id)} onPause={onPause} onCancel={onCancel} onRetry={onRetry} onDelete={onDelete} />
+            <TaskRow key={t.id} task={t} showRoute={proxyConfigured} onDetail={(row) => setDetailId(row.id)} onPause={onPause} onCancel={onCancel} onRetry={onRetry} onDelete={onDelete} />
           ))}
         </div>
       )}
@@ -826,6 +883,7 @@ export default function App() {
       {/* 详情抽屉 */}
       <DetailDrawer
         task={detailTask}
+        proxyConfigured={proxyConfigured}
         onClose={() => setDetailId(null)}
         onRetry={onRetry}
         onOpen={onOpen}

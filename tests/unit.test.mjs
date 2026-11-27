@@ -3,9 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { matchSite, extractUrls } from '../src/sites.mjs';
-import { buildArgs, parseProgressDetail } from '../src/downloader.mjs';
+import { buildArgs, downloadRoute, parseProgressDetail } from '../src/downloader.mjs';
 import { SOURCE_PRINT_ARGS, annotateIps, createSourceCollector, emitSource, streamsFromUrls, summarizeSources } from '../src/stream-source.mjs';
-import { isValidProxy } from '../src/config.mjs';
+import { isValidProxy, saveConfig } from '../src/config.mjs';
 import { buildExplorerArgs } from '../src/server.mjs';
 
 // ---------- yt-dlp 进度行解析（速度/ETA/总量） ----------
@@ -304,6 +304,38 @@ test('buildArgs: 下载前让 yt-dlp 把选中的格式（视频流地址）打�
     assert.ok(at > 0, SOURCE_PRINT_ARGS[i + 1]);
     assert.equal(args[at - 1], '--print');
   }
+});
+
+// ---------- 线路：这次下载的数据走设置里的代理，还是直连 ----------
+test('downloadRoute: 抖音 / 小红书 / HLS 站点固定直连，配了代理也不走', () => {
+  const proxy = 'http://user:secret@127.0.0.1:7890';
+  for (const u of ['https://v.douyin.com/ABC123/', 'https://www.douyin.com/video/7300000000000000000', 'https://xhslink.com/abc123', 'https://www.xiaohongshu.com/explore/651']) {
+    assert.deepEqual(downloadRoute(u, { proxy }), { via: 'direct', reason: 'domestic' }, u);
+  }
+  saveConfig({ hlsSites: ['stream.example.org'] });
+  try {
+    assert.deepEqual(downloadRoute('https://stream.example.org/watch/abc', { proxy }), { via: 'direct', reason: 'browser' });
+  } finally {
+    saveConfig({ hlsSites: [] });
+  }
+});
+
+test('downloadRoute: 其它站点跟随设置 —— 配了代理就走代理（地址不带账号密码），没配就直连', () => {
+  assert.deepEqual(downloadRoute('https://youtu.be/x', { proxy: 'http://user:secret@127.0.0.1:7890' }), { via: 'proxy', proxy: 'http://127.0.0.1:7890' });
+  for (const u of ['https://www.youtube.com/watch?v=x', 'https://www.bilibili.com/video/BV1GJ411x7h7', 'https://vimeo.com/123456', 'http://127.0.0.1:9/fake.mp4']) {
+    assert.deepEqual(downloadRoute(u, { proxy: 'socks5://127.0.0.1:1080' }), { via: 'proxy', proxy: 'socks5://127.0.0.1:1080' }, u);
+    assert.deepEqual(downloadRoute(u, { proxy: '' }), { via: 'direct', reason: 'none' }, u);
+  }
+  // 不显式传代理时看 config.json
+  saveConfig({ proxy: 'http://127.0.0.1:7890' });
+  try {
+    assert.equal(downloadRoute('https://youtu.be/x').via, 'proxy');
+  } finally {
+    saveConfig({ proxy: '' });
+  }
+  assert.deepEqual(downloadRoute('https://youtu.be/x'), { via: 'direct', reason: 'none' });
+  // 标成「走代理」的站点，交给 yt-dlp 的参数里也确实带着代理：标记和实际下载不能各说各话
+  assert.ok(buildArgs('https://youtu.be/x', { proxy: 'socks5://127.0.0.1:1080' }).includes('--proxy'));
 });
 
 // ---------- 代理地址校验 ----------

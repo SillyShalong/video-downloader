@@ -11,7 +11,7 @@
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)](https://react.dev/)
 [![Ant Design](https://img.shields.io/badge/Ant_Design-6-1677ff?logo=antdesign&logoColor=white)](https://ant.design/)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-87%20desktop%20·%2040%20Android-brightgreen)](#-automated-tests)
+[![Tests](https://img.shields.io/badge/tests-89%20desktop%20·%2040%20Android-brightgreen)](#-automated-tests)
 
 **Desktop app + CLI + Android app** · Quality selection · Real-time speed · Pause/Cancel · Download history · H.264 output · Bilingual UI
 
@@ -32,6 +32,7 @@
 | 📋 **Multi-source picker** | Playlists/channels auto-detected | Check the videos you want, download only those |
 | 🗂 **Download history** | Full metadata persisted (URL, path, size) | Compact list + detail drawer, delete individual records |
 | 🔎 **Stream source** | The address the video actually comes from: host of each video/audio stream + the IPs this machine resolves it to | Shown above the log in the details, to tell which server a 403 or a stall is coming from (desktop) |
+| 🧭 **Proxy or direct?** | Every download is marked "via proxy" or "direct" as soon as it starts; HLS and domestic sites that bypass the configured proxy are flagged in a warning colour | Task row (when a proxy is configured) and the details (desktop) |
 | 🛡 **H.264 guaranteed** | All sites lock H.264+AAC | Windows default player works, no black screen |
 | 🌐 **Proxy support** | HTTP/SOCKS5 with one-click test | Douyin/Xiaohongshu auto-bypass (domestic) |
 | 🔁 **Stable downloads** | Auto-retry transient errors (403/timeout); when segment URLs expire, fresh ones are fetched and the download resumes — no half-finished files | Manual pause / cancel / resume; everything downloaded so far is kept |
@@ -121,7 +122,7 @@ npm run android:apk     # → android/app/build/outputs/apk/debug/app-debug.apk
 ## 🧪 Automated Tests
 
 ```bash
-npm test                    # Desktop: build frontend + all tests (87)
+npm test                    # Desktop: build frontend + all tests (89)
 npm run test:gui            # Desktop GUI regression (headless Edge drives the real page)
 npm run test:hls            # Desktop HLS engine / generic downloader: resuming after segment URLs expire (local test source, no internet needed)
 npm run test:network        # Desktop: enable external-network tests
@@ -132,7 +133,7 @@ npm run test:android:e2e    # Android: real-GUI E2E on an emulator (adb taps/typ
 npm run test:android:big    # Android: 4GiB big-file regression — needs an emulator with ≥ 11 GB free storage and adb root; see tests/android-big-file-check.mjs
 ```
 
-- **Desktop (87)**: site detection, share-text parsing, download args (H.264 lock regression; quality caps also apply to sites that only offer muxed streams), stream source (yt-dlp output parsing, host → IP, proxy case), proxy validation, explorer command line, download task pipeline (SSE → disk), retry/pause/cancel, parallel downloads (3 at once by default, the 4th queues), history persistence, multi-source selection, anti-flicker, modal close, remote-mode errors — and **resuming after segment URLs expire**: a local server rotates its token every few segments, and both the HLS engine and the yt-dlp path must finish the download, fetch each segment exactly once, and produce byte-identical output to an error-free run; an unreachable segment has to fail loudly instead of leaving a half-finished file, and cancelling kills the process immediately while keeping the resume point.
+- **Desktop (89)**: site detection, share-text parsing, download args (H.264 lock regression; quality caps also apply to sites that only offer muxed streams), stream source (yt-dlp output parsing, host → IP, proxy case), proxy-or-direct marker (fixed-direct sites stay direct with a proxy configured), proxy validation, explorer command line, download task pipeline (SSE → disk), retry/pause/cancel, parallel downloads (3 at once by default, the 4th queues), history persistence, multi-source selection, anti-flicker, modal close, remote-mode errors — and **resuming after segment URLs expire**: a local server rotates its token every few segments, and both the HLS engine and the yt-dlp path must finish the download, fetch each segment exactly once, and produce byte-identical output to an error-free run; an unreachable segment has to fail loudly instead of leaving a half-finished file, and cancelling kills the process immediately while keeping the resume point.
 - **Android JVM (40)**: MP4 writer/reader round-trips (timestamps, keyframes, edit lists, B-frames, fragmented files whose sample table is not empty), m3u8 parsing, MPEG-TS/PES construction, ADTS splitting, AES-128 decryption, URL/site detection, filename sanitizing, finalising a TS file larger than 2 GiB.
 - **Android media check**: our muxer's output must match `ffmpeg -c copy` *frame by frame* (picture hash + presentation time + keyframe table), audio sample-exact, A/V start alignment, zero decode errors — on synthetic media (with B-frames), fragmented MP4, HLS fMP4, and with `--yt` real YouTube streams.
 - **Android E2E (26 scenarios)**: on a real emulator UI — launch, Bilibili/YouTube/HLS downloads (files pulled and verified with ffmpeg), system folder picker (starts in the current folder, picking a folder, cancelling, invalid folder), multi-part selection, pause/resume, resume after the app is killed, cancel, detail drawer, settings, delete history, HLS download continuing from its resume point after segment URLs expire, retry after a mid-download HLS failure without re-downloading, Bilibili pause/resume, YouTube audio-only, parallel downloads (3 at once by default, serial when set to 1, YouTube and HLS mixed).

@@ -195,6 +195,11 @@ details.log pre {
 .src-ips { font-family: Consolas, monospace; font-size: 11.5px; color: #6d9eff; word-break: break-all; }
 .src-url { margin-top: 2px; font-family: Consolas, monospace; font-size: 11px; }
 .src-note { color: rgba(255, 255, 255, 0.38); font-size: 11px; line-height: 1.5; }
+/* 线路标记：走代理（蓝）；设了代理却直连（琥珀 —— 最需要被看见的一种） */
+.chip.route.proxy { color: #6d9eff; border-color: rgba(109, 158, 255, 0.4); background: rgba(109, 158, 255, 0.1); }
+.chip.route.bypass { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.08); }
+.src-route { background: rgba(255, 255, 255, 0.035); }
+.src-route .src-note { margin-top: 4px; color: rgba(255, 255, 255, 0.52); }
 
 .empty {
   border: 1.5px dashed rgba(255, 255, 255, 0.09); border-radius: 14px;

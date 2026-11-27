@@ -16,6 +16,7 @@ writeFileSync(process.env.VD_CONFIG_PATH, JSON.stringify({ proxy: '' }));
 process.env.VD_HISTORY_PATH = path.join(tmpRoot, 'history.json');
 
 const { createApp } = await import('../src/server.mjs');
+const { downloadRoute } = await import('../src/downloader.mjs');
 
 // ---------- 测试基础设施 ----------
 const server = createApp();
@@ -313,6 +314,12 @@ test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', 
   assert.equal(task.sourceProxy, null);
   const sourceLines = task.log.filter((l) => l.startsWith('[source] '));
   assert.deepEqual(sourceLines, [`[source] ${stubHost} → 127.0.0.1`], '日志里留一行（IP 解析完原地更新，不重复记）');
+  // 线路：设置里没有代理 → 直连。任务一开始运行（第一个 running 事件）就带上，不用等下载出结果
+  assert.deepEqual(task.route, { via: 'direct', reason: 'none' });
+  assert.ok(
+    events.some((ev) => ev.type === 'task' && ev.task.status === 'running' && ev.task.route?.via === 'direct'),
+    '任务一开始运行就带上线路标记',
+  );
   // 文件确实存在且内容一致
   const { readFile } = await import('node:fs/promises');
   const content = await readFile(task.file);
@@ -326,6 +333,7 @@ test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', 
   assert.equal(rec.file, task.file, '历史保留下载目的地');
   // 详情里显示的「视频流来源」也一起保留（重启后还能看当时是从哪个域名下的）
   assert.deepEqual(rec.sources?.[0]?.links?.map((l) => [l.url, l.ips]), [[STUB_URL, ['127.0.0.1']]], '历史保留视频流来源');
+  assert.deepEqual(rec.route, { via: 'direct', reason: 'none' }, '历史保留线路（走代理还是直连）');
 
   // 重启回填：新建一个 app 实例，任务列表应含历史记录
   const server2 = createApp();
@@ -338,6 +346,7 @@ test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', 
     assert.equal(st?.file, task.file);
     assert.equal(st?.url, STUB_URL);
     assert.deepEqual(st?.sources?.[0]?.links?.map((l) => l.host), [`127.0.0.1:${stub.address().port}`], '重启后视频流来源可见');
+    assert.deepEqual(st?.route, { via: 'direct', reason: 'none' }, '重启后线路标记可见');
   } finally {
     server2.close();
     server2.closeAllConnections?.();
@@ -347,6 +356,24 @@ test('下载任务全链路：提交 → SSE 事件 → done → 文件落盘', 
 test('POST /api/download: 重复链接去重为一个任务', async () => {
   const { body } = await post('/api/download', { input: `${STUB_URL} ${STUB_URL}` });
   assert.equal(body.tasks.length, 1, '相同链接应去重');
+});
+
+test('POST /api/download: 设置里有代理时，任务一开始就标成「走代理」', { timeout: 60000 }, async () => {
+  await post('/api/config', { proxy: 'http://127.0.0.1:7890' });
+  try {
+    const { body } = await post('/api/download', { input: STUB_URL, outDir: path.join(tmpRoot, 'route-dl') });
+    const id = body.tasks[0].id;
+    // 队列一次只跑一个，排在前面的任务下完才轮到它；一开始运行线路就定下来了
+    const started = await waitStatus(id, ['running', 'error', 'cancelled', 'done'], 30000);
+    assert.deepEqual(started?.route, { via: 'proxy', proxy: 'http://127.0.0.1:7890' }, '配置了代理 → 标成走代理');
+    // 这个端口上并没有代理，下载注定失败：还在跑的话马上终止，不等它
+    await post('/api/cancel', { id }).catch(() => {});
+    await waitStatus(id, ['cancelled', 'error', 'done'], 15000);
+  } finally {
+    await post('/api/config', { proxy: '' });
+  }
+  // 代理清掉之后，同样的链接就是直连
+  assert.deepEqual(downloadRoute(STUB_URL), { via: 'direct', reason: 'none' });
 });
 
 // ---------- 多视频源探测 ----------

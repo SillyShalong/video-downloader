@@ -179,6 +179,10 @@ test('GUI: 详情里显示视频流来源（真正下载的域名 + IP），排�
   assert.ok(text.includes(stubHost), '显示域名（这里是本机桩的地址和端口）: ' + text);
   assert.ok(/→\s*127\.0\.0\.1/.test(text), '显示解析出的 IP: ' + text);
   assert.ok(text.includes(STUB_URL), '完整地址显示出来（可复制）: ' + text);
+  // 线路：设置里没有代理 → 直连，详情里写明原因；任务行上不标（没配代理时全是直连，不用每行都写）
+  const routeText = await page.textContent('.ant-drawer-open #stream-route');
+  assert.ok(routeText.includes('直连'), '详情里标明是直连: ' + routeText);
+  assert.ok(routeText.includes('没有配置代理'), '写明为什么直连: ' + routeText);
   // 位置：紧挨着日志的上面
   const aboveLog = await page.evaluate(() => {
     const src = document.querySelector('.ant-drawer-open #stream-source');
@@ -186,6 +190,7 @@ test('GUI: 详情里显示视频流来源（真正下载的域名 + IP），排�
     return !!src && !!log && !!(src.compareDocumentPosition(log) & Node.DOCUMENT_POSITION_FOLLOWING);
   });
   assert.ok(aboveLog, '视频流来源应排在日志上方');
+  assert.equal(await page.locator('.trow .chip.route').count(), 0, '没配代理时任务行不标线路');
   await page.click('.ant-drawer-open .ant-drawer-close');
   await page.waitForFunction(() => !document.querySelector('.ant-drawer-open') || getComputedStyle(document.querySelector('.ant-drawer-open')).display === 'none');
 });
@@ -280,4 +285,82 @@ test('GUI: 运行中任务显示速度并可暂停/恢复', { skip: !browser, ti
     () => [...document.querySelectorAll('.trow.done')].some((e) => e.textContent.includes('slow')),
     { timeout: 30000 },
   );
+});
+
+test('GUI: 设了代理时，每个任务标明「走代理」还是「直连」；直连的写明没有走设置里的代理', { skip: !browser, timeout: 60000 }, async () => {
+  const post = (p, body) =>
+    fetch(BASE + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+  const hlsRow = page.locator('.trow', { hasText: 'HLS站点-直连' });
+  const ytRow = page.locator('.trow', { hasText: 'YouTube-走代理' });
+  // 抽屉是复用的：上一次的内容会留到新任务渲染出来，所以要等标题换成对应的任务
+  const openDrawer = async (row, title) => {
+    await row.locator('.t-title').click();
+    await page.waitForFunction((t) => document.querySelector('.ant-drawer-open .ant-drawer-title')?.textContent === t, title, { timeout: 8000 });
+    await page.waitForSelector('.ant-drawer-open #stream-route', { timeout: 8000 });
+  };
+  const closeDrawer = async () => {
+    await page.click('.ant-drawer-open .ant-drawer-close');
+    await page.waitForFunction(() => !document.querySelector('.ant-drawer-open'));
+  };
+
+  // 示例记录：一个设了代理却直连的 HLS 任务、一个走代理的 YouTube 任务。
+  // 历史只在服务启动时读入，所以写进文件后另起一个服务来显示它们（不动其它用例用的那个服务）
+  const link = (kind, url, ips) => ({ kind, url, host: new URL(url).host, hostname: new URL(url).hostname, ips });
+  const now = Date.now();
+  const base = { status: 'done', percent: 100, error: null, speed: null, eta: null, downloaded: null, totalBytes: null, quality: null, audio: false, playlistItems: null, log: [] };
+  const records = [
+    {
+      ...base, id: 'route-hls-01', url: 'https://stream.example.org/watch/abc', site: 'hls-generic', title: 'HLS站点-直连',
+      file: 'C:\\dl\\hls.mp4', createdAt: now, sizeBytes: 913253, route: { via: 'direct', reason: 'browser' }, sourceProxy: null,
+      sources: [{ role: 'both', label: '900 · mp4', protocol: 'm3u8_native', links: [link('url', 'https://cdn.stream.example.org/hls/720p/index.m3u8', ['104.18.49.25'])] }],
+    },
+    {
+      ...base, id: 'route-yt-0001', url: 'https://youtu.be/x', site: 'youtube', title: 'YouTube-走代理',
+      file: 'C:\\dl\\yt.mp4', createdAt: now + 1, sizeBytes: 7488887, route: { via: 'proxy', proxy: 'http://127.0.0.1:7890' },
+      sourceProxy: { display: 'http://127.0.0.1:7890', hostname: '127.0.0.1', ips: ['127.0.0.1'] },
+      sources: [{ role: 'both', label: '22 · 720p · mp4', protocol: 'https', links: [link('url', 'https://rr1---sn-test.googlevideo.com/videoplayback?id=x', [])] }],
+    },
+  ];
+  const { appendHistory, removeHistory } = await import('../src/history.mjs');
+  for (const r of records) appendHistory(r);
+  const server2 = createApp();
+  await new Promise((res) => server2.listen(0, '127.0.0.1', res));
+  const BASE2 = `http://127.0.0.1:${server2.address().port}`;
+  await post('/api/config', { proxy: 'http://127.0.0.1:7890' });
+  try {
+    await page.goto(BASE2 + '/');
+    await page.waitForSelector('#input');
+    await hlsRow.waitFor({ timeout: 8000 });
+    // 任务行：设了代理才标。走代理是蓝色；设了代理却直连是醒目的琥珀色（最容易被误会成走了代理的情况）
+    assert.equal((await hlsRow.locator('.chip.route.bypass').textContent()).trim(), '直连');
+    assert.equal((await ytRow.locator('.chip.route.proxy').textContent()).trim(), '走代理');
+
+    // 直连的详情：写明没有走设置里的代理、这是哪一类直连；没有代理地址可列；视频流的 IP 照常解析显示
+    await openDrawer(hlsRow, 'HLS站点-直连');
+    let text = await page.textContent('.ant-drawer-open #stream-route');
+    assert.ok(text.includes('直连') && text.includes('没有走设置里的代理'), '直连要写明没走代理: ' + text);
+    assert.ok(text.includes('内置浏览器'), '写明是哪一类直连: ' + text);
+    assert.equal(await page.locator('.ant-drawer-open #stream-route code').count(), 0, '直连时没有代理地址');
+    text = await page.textContent('.ant-drawer-open #stream-source');
+    assert.ok(text.includes('cdn.stream.example.org') && /→\s*104\.18\.49\.25/.test(text), '直连时显示视频流的域名和 IP: ' + text);
+    await closeDrawer();
+
+    // 走代理的详情：写明经哪个代理转发；视频流只列域名不给 IP（域名由代理那一侧解析），IP 只有代理自己的
+    await openDrawer(ytRow, 'YouTube-走代理');
+    text = await page.textContent('.ant-drawer-open #stream-route');
+    assert.ok(text.includes('走代理') && text.includes('http://127.0.0.1:7890'), '走代理要写明代理地址: ' + text);
+    assert.ok(text.includes('转发'), '写明数据经代理转发: ' + text);
+    const ips = await page.locator('.ant-drawer-open #stream-source .src-ips').allTextContents();
+    assert.equal(ips.length, 1, '走代理时只有代理的 IP，视频流不解析 IP: ' + JSON.stringify(ips));
+    assert.ok(ips[0].includes('127.0.0.1'));
+    assert.ok((await page.textContent('.ant-drawer-open #stream-source')).includes('rr1---sn-test.googlevideo.com'), '视频流的域名照常列出');
+    await closeDrawer();
+  } finally {
+    await post('/api/config', { proxy: '' });
+    for (const r of records) removeHistory(r.id);
+    server2.close();
+    server2.closeAllConnections?.();
+    await page.goto(BASE + '/');
+    await page.waitForSelector('#input');
+  }
 });
