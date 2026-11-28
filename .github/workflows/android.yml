@@ -37,6 +37,26 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
+      # 发布用的签名密钥放在仓库的 secrets 里：每个版本同一把，新版本才能直接装到旧版本上面。
+      # 密钥库是二进制文件，存的是 base64。没有密钥时（比如来自 fork 的 pull request）退回默认的调试密钥，构建照样跑完
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            {
+              echo "VD_KEYSTORE_PATH=$RUNNER_TEMP/release.jks"
+              echo "VD_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+              echo "VD_KEY_ALIAS=$KEY_ALIAS"
+            } >> "$GITHUB_ENV"
+            echo "use the release signing key"
+          else
+            echo "no signing key: fall back to the debug key"
+          fi
+
       # 媒体校验拿 ffmpeg 当参考实现（逐帧比对自研封装器的产物）
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg

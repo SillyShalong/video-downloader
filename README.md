@@ -100,6 +100,8 @@ The Android app runs **entirely on the phone** — it does not need the desktop 
 - **Not available on Android**: Douyin and Xiaohongshu (use the desktop app), and yt-dlp's generic "other sites".
 - Android refuses to let an app pick the root of `Download`, and reclaims folders that are completely empty. So when you open the folder picker before the default folder exists, the app creates `Download/VideoDownloader` with a tiny `VideoDownloader.txt` inside — the picker can then open straight into that folder instead of a disabled "Use this folder" button.
 
+- **Upgrades install over the old version**: every released APK is signed with the same key (the key lives in the repository's GitHub Actions secrets, not in the repo). From v1.11.1 on, a new version installs straight over the old one and keeps settings and history. v1.11.0 and earlier were signed with a different key each time, so moving to v1.11.1 means uninstalling once.
+
 The muxer is written for correctness first: B-frame reordering, AAC encoder delay and audio/video alignment are preserved so the downloaded file plays exactly like the source (verified frame-by-frame against ffmpeg — see [Automated Tests](#-automated-tests)).
 
 **Build the APK yourself** (needs JDK 21 + Android SDK):
@@ -107,6 +109,8 @@ The muxer is written for correctness first: B-frame reordering, AAC encoder dela
 ```bash
 npm run android:apk     # → android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+A local build is signed with the machine's own debug key and will not install over a released version. To sign with the release key, set the environment variables `VD_KEYSTORE_PATH`, `VD_KEYSTORE_PASSWORD` and `VD_KEY_ALIAS` (explained in `android/app/build.gradle`).
 
 ## 🔧 Platform Details
 

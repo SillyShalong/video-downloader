@@ -1,6 +1,6 @@
 {
   "name": "video-downloader",
-  "version": "1.11.0",
+  "version": "1.11.1",
   "private": true,
   "type": "module",
   "description": "视频下载工具：YouTube / 抖音 / 哔哩哔哩 / 小红书 —— Electron + React + Ant Design，另有可独立运行的安卓应用",

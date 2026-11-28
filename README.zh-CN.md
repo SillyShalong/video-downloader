@@ -99,6 +99,7 @@ node cli.mjs "https://youtu.be/xxxx" -p http://127.0.0.1:7890 # 走代理
 - **远程模式**（可选）：桌面端执行 `node gui.mjs --lan` → App ⚙ 设置 → 填服务器地址。之后也可以用它通过局域网操控桌面服务。
 - **安卓上暂不支持**：抖音、小红书（请用桌面版），以及 yt-dlp 的「其他站点」。
 - 系统不允许应用直接选「下载」根目录，空文件夹也会被回收。所以默认目录还不存在时点「浏览…」，App 会建出 `下载/VideoDownloader` 并在里面放一个很小的 `VideoDownloader.txt` —— 选择器才能直接停在这个目录里，而不是对着一个灰掉的「使用此文件夹」按钮。
+- **升级不用卸载**：发布出来的 APK 每个版本都用同一把密钥签名（密钥存放在 GitHub Actions 的 secrets 里，不在仓库中）。从 v1.11.1 起，新版本可以直接装到旧版本上面，设置和历史记录都会保留。v1.11.0 及更早的版本每次签名都不一样，升级到 v1.11.1 需要先卸载一次。
 
 封装器把正确性放在第一位：B 帧重排、AAC 编码预滚、音画对齐都原样保留，下载下来的文件播放效果与源一致（已用 ffmpeg 逐帧校验，见[自动化测试](#-自动化测试)）。
 
@@ -107,6 +108,8 @@ node cli.mjs "https://youtu.be/xxxx" -p http://127.0.0.1:7890 # 走代理
 ```bash
 npm run android:apk     # 产物：android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+自己编译时默认用本机的调试密钥签名，装不到已发布的版本上面。要和发布版用同一把密钥，设置环境变量 `VD_KEYSTORE_PATH`、`VD_KEYSTORE_PASSWORD`、`VD_KEY_ALIAS`（说明见 `android/app/build.gradle`）。
 
 ## 🔧 平台说明
 

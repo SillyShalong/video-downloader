@@ -1,6 +1,23 @@
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 
+/*
+ * 发布用的签名密钥。每个版本都用同一把密钥签名，新版本才能直接装到旧版本上面（不卸载，设置和历史记录都留着）。
+ * 密钥不放在仓库里：CI 从 GitHub Actions 的 secrets 取，本机打发布包时自己设置这几个环境变量：
+ *   VD_KEYSTORE_PATH      密钥库文件（PKCS12）
+ *   VD_KEYSTORE_PASSWORD  密钥库的口令（PKCS12 里密钥的口令和它相同）
+ *   VD_KEY_ALIAS          密钥的别名
+ * 没有这些变量时就是 Android SDK 默认的调试密钥 —— 每台机器各不相同，装不到已发布的版本上面，只适合自己开发调试。
+ */
+def signingEnv = [
+    storePath: System.getenv('VD_KEYSTORE_PATH'),
+    storePassword: System.getenv('VD_KEYSTORE_PASSWORD'),
+    alias: System.getenv('VD_KEY_ALIAS'),
+]
+if (signingEnv.storePath && !(signingEnv.storePassword && signingEnv.alias)) {
+    throw new GradleException('指定了 VD_KEYSTORE_PATH，就要同时给出 VD_KEYSTORE_PASSWORD 和 VD_KEY_ALIAS')
+}
+
 android {
     namespace = "com.sillyshalong.videodownloader"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -17,10 +34,25 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        published {
+            if (signingEnv.storePath) {
+                storeFile file(signingEnv.storePath)
+                storePassword signingEnv.storePassword
+                keyAlias signingEnv.alias
+                keyPassword signingEnv.storePassword
+            }
+        }
+    }
     buildTypes {
+        debug {
+            // 发布的就是 debug 这一类构建。给了发布密钥就用它签名（没给的话沿用默认的调试密钥）
+            if (signingEnv.storePath) signingConfig signingConfigs.published
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (signingEnv.storePath) signingConfig signingConfigs.published
         }
     }
     testOptions {
